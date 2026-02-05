@@ -536,6 +536,204 @@
   animation-delay: 0.35s;
 }
 
+.gemini-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  padding: 12px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(90, 120, 150, 0.4);
+  background: linear-gradient(140deg, rgba(72, 197, 255, 0.9), rgba(61, 220, 140, 0.7));
+  color: #071018;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.gemini-panel {
+  position: fixed;
+  right: 24px;
+  bottom: 90px;
+  width: 360px;
+  height: 500px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(120, 150, 180, 0.2);
+  background: linear-gradient(160deg, rgba(18, 27, 37, 0.98), rgba(10, 14, 22, 0.96));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  transform: translateY(16px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  z-index: 20;
+  resize: both;
+  overflow: hidden;
+  min-width: 320px;
+  min-height: 360px;
+  max-width: 90vw;
+  max-height: 80vh;
+}
+
+.gemini-panel.open {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.gemini-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gemini-close {
+  border: 1px solid rgba(120, 150, 180, 0.2);
+  background: rgba(12, 18, 26, 0.8);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.gemini-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.gemini-message {
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  max-width: 85%;
+}
+
+.gemini-message p {
+  margin: 0 0 0.5rem;
+}
+
+.gemini-message p:last-child {
+  margin-bottom: 0;
+}
+
+.gemini-message ul,
+.gemini-message ol {
+  margin: 0 0 0.5rem;
+  padding-left: 1.2rem;
+}
+
+.gemini-message table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+}
+
+.gemini-message th,
+.gemini-message td {
+  border: 1px solid rgba(120, 150, 180, 0.25);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.gemini-message th {
+  background: rgba(72, 197, 255, 0.12);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.gemini-message tr:nth-child(even) td {
+  background: rgba(12, 18, 26, 0.55);
+}
+
+.gemini-message strong {
+  color: var(--text);
+}
+
+.gemini-message.user {
+  align-self: flex-end;
+  background: rgba(72, 197, 255, 0.2);
+  border: 1px solid rgba(72, 197, 255, 0.4);
+}
+
+.gemini-message.assistant {
+  align-self: flex-start;
+  background: rgba(61, 220, 140, 0.16);
+  border: 1px solid rgba(61, 220, 140, 0.35);
+}
+
+.gemini-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+}
+
+.typing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+  animation: typing-bounce 1s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.gemini-error {
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 99, 99, 0.4);
+  background: rgba(255, 99, 99, 0.12);
+  color: rgba(255, 210, 210, 0.95);
+  font-size: 0.8rem;
+}
+
+.gemini-input {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.gemini-input textarea {
+  resize: none;
+  border-radius: 12px;
+  border: 1px solid rgba(120, 150, 180, 0.25);
+  background: rgba(8, 12, 18, 0.8);
+  color: var(--text);
+  padding: 10px 12px;
+  font-family: inherit;
+}
+
+.gemini-input button {
+  border-radius: 12px;
+  border: 1px solid rgba(120, 150, 180, 0.25);
+  background: rgba(61, 220, 140, 0.85);
+  color: #071018;
+  font-weight: 600;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
 @keyframes card-enter {
   from {
     opacity: 0;
@@ -565,6 +763,18 @@
   50% {
     transform: scale(1.2);
     opacity: 0.6;
+  }
+}
+
+@keyframes typing-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.6;
+  }
+  50% {
+    transform: translateY(-6px);
+    opacity: 1;
   }
 }
 
@@ -614,6 +824,18 @@
   .dashboard-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .gemini-panel {
+    left: 16px;
+    right: 16px;
+    width: auto;
+    height: 65vh;
+    resize: none;
+  }
+
+  .gemini-fab {
+    right: 16px;
   }
 }
 

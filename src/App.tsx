@@ -1,6 +1,8 @@
 import './App.css'
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 const quickMetrics = [
   {
@@ -109,8 +111,23 @@ const formatLocalTime = (date: Date) =>
     second: '2-digit',
   })
 
+type GeminiMessage = {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+const defaultGreeting: GeminiMessage = {
+  role: 'assistant',
+  text: 'Hi! Ask me anything.',
+}
+
 function App() {
   const [localTime, setLocalTime] = useState(() => formatLocalTime(new Date()))
+  const [geminiOpen, setGeminiOpen] = useState(false)
+  const [messages, setMessages] = useState<GeminiMessage[]>([defaultGreeting])
+  const [input, setInput] = useState('')
+  const [isSending, setIsSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -119,6 +136,47 @@ function App() {
 
     return () => window.clearInterval(intervalId)
   }, [])
+
+  const startNewConversation = () => {
+    setMessages([defaultGreeting])
+    setError(null)
+    setInput('')
+  }
+
+  const sendToGemini = async () => {
+    const trimmed = input.trim()
+    if (!trimmed || isSending) {
+      return
+    }
+
+    setMessages((current) => [...current, { role: 'user', text: trimmed }])
+    setInput('')
+    setIsSending(true)
+    setError(null)
+
+    try {
+      const response = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: trimmed }),
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(payload?.error ?? 'Gemini request failed.')
+      }
+
+      const payload = await response.json()
+      const text = String(payload?.text ?? '').trim() || 'No response received.'
+      setMessages((current) => [...current, { role: 'assistant', text }])
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Gemini request failed.'
+      setError(message)
+    } finally {
+      setIsSending(false)
+    }
+  }
 
   return (
     <div className="app">
@@ -312,6 +370,84 @@ function App() {
         </div>
         <div className="footer-right">Weather Station UI Mockup</div>
       </footer>
+
+      <button
+        className="gemini-fab"
+        type="button"
+        onClick={() => {
+          if (geminiOpen) {
+            startNewConversation()
+          } else {
+            setGeminiOpen(true)
+          }
+        }}
+        aria-expanded={geminiOpen}
+        aria-controls="gemini-panel"
+      >
+        {geminiOpen ? 'New conversation' : 'Gemini'}
+      </button>
+
+      <aside
+        id="gemini-panel"
+        className={`gemini-panel ${geminiOpen ? 'open' : ''}`}
+        aria-hidden={!geminiOpen}
+      >
+        <div className="gemini-header">
+          <div>
+            <p className="eyebrow">Ask Gemini</p>
+            <h3>Quick Chat</h3>
+          </div>
+          <button
+            className="gemini-close"
+            type="button"
+            onClick={() => setGeminiOpen(false)}
+            aria-label="Close Gemini panel"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="gemini-messages" aria-live="polite">
+          {messages.map((message, index) => (
+            <div
+              key={`${message.role}-${index}`}
+              className={`gemini-message ${message.role}`}
+            >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {message.text}
+              </ReactMarkdown>
+            </div>
+          ))}
+          {isSending && (
+            <div className="gemini-message assistant gemini-typing">
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+            </div>
+          )}
+        </div>
+
+        {error && <div className="gemini-error">{error}</div>}
+
+        <form
+          className="gemini-input"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void sendToGemini()
+          }}
+        >
+          <textarea
+            rows={2}
+            placeholder="Ask Gemini anything..."
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            disabled={isSending}
+          />
+          <button type="submit" disabled={isSending || !input.trim()}>
+            {isSending ? 'Sending...' : 'Send'}
+          </button>
+        </form>
+      </aside>
     </div>
   )
 }
