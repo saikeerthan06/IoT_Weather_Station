@@ -1,94 +1,96 @@
 import './App.css'
-import { useEffect, useState } from 'react'
-import type { CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-const quickMetrics = [
-  {
-    label: 'Temperature',
-    value: '28.4',
-    unit: 'C',
-    delta: '+0.6',
-    note: 'Stable',
+type MetricId = 'temperature' | 'humidity' | 'wind'
+type Timeframe = '1h' | '6h' | '12h' | '24h' | '3d' | 'all'
+
+type MetricPoint = {
+  time: string
+  value: number
+}
+
+type HistoricalMetric = {
+  key: MetricId
+  label: string
+  unit: string
+  points: MetricPoint[]
+  latest: number | null
+  min: number | null
+  max: number | null
+  delta: number | null
+  available: boolean
+}
+
+type HistoryApiResponse = {
+  metrics: Record<MetricId, HistoricalMetric>
+}
+
+type GeminiMessage = {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+type ChartGeometry = {
+  width: number
+  height: number
+  padding: number
+  min: number
+  max: number
+  linePath: string
+  areaPath: string
+  dot: { x: number; y: number }
+  points: Array<{ x: number; y: number; time: string; value: number }>
+}
+
+const metricOrder: MetricId[] = ['temperature', 'humidity', 'wind']
+
+const metricStyleConfig: Record<
+  MetricId,
+  { accent: string; fallbackUnit: string; defaultLabel: string }
+> = {
+  temperature: {
     accent: 'ember',
-    bar: 72,
+    fallbackUnit: 'C',
+    defaultLabel: 'Temperature',
   },
-  {
-    label: 'Humidity',
-    value: '56',
-    unit: '%',
-    delta: '-3',
-    note: 'Comfort',
+  humidity: {
     accent: 'sky',
-    bar: 56,
+    fallbackUnit: '%',
+    defaultLabel: 'Humidity',
   },
-  {
-    label: 'Wind',
-    value: '12',
-    unit: 'km/h',
-    delta: '+2.1',
-    note: 'Breezy',
+  wind: {
     accent: 'lime',
-    bar: 35,
+    fallbackUnit: 'km/h',
+    defaultLabel: 'Wind',
   },
-  {
-    label: 'Rain',
-    value: '0.4',
-    unit: 'mm',
-    delta: 'Light',
-    note: 'Drizzle',
-    accent: 'teal',
-    bar: 12,
-  },
+}
+
+const timeframeOptions: Array<{ value: Timeframe; label: string }> = [
+  { value: '1h', label: '1H' },
+  { value: '6h', label: '6H' },
+  { value: '12h', label: '12H' },
+  { value: '24h', label: '24H' },
+  { value: '3d', label: '3D' },
+  { value: 'all', label: 'All' },
 ]
 
-const trendCards = [
-  {
-    label: 'Temperature',
-    value: '28.4',
-    unit: 'C',
-    range: '24-31 C',
-    accent: 'ember',
-    path: 'M4 62 L28 48 L52 54 L78 40 L104 44 L130 34 L156 40 L196 28',
-    area:
-      'M4 62 L28 48 L52 54 L78 40 L104 44 L130 34 L156 40 L196 28 L196 74 L4 74 Z',
-    dot: { x: 196, y: 28 },
-  },
-  {
-    label: 'Humidity',
-    value: '56',
-    unit: '%',
-    range: '48-62 %',
-    accent: 'sky',
-    path: 'M4 48 L30 52 L60 46 L90 50 L120 44 L150 48 L180 40 L196 44',
-    area:
-      'M4 48 L30 52 L60 46 L90 50 L120 44 L150 48 L180 40 L196 44 L196 74 L4 74 Z',
-    dot: { x: 196, y: 44 },
-  },
-  {
-    label: 'Wind',
-    value: '12',
-    unit: 'km/h',
-    range: '6-18 km/h',
-    accent: 'lime',
-    path: 'M4 64 L28 50 L52 62 L78 42 L104 54 L130 30 L156 50 L196 40',
-    area:
-      'M4 64 L28 50 L52 62 L78 42 L104 54 L130 30 L156 50 L196 40 L196 74 L4 74 Z',
-    dot: { x: 196, y: 40 },
-  },
-  {
-    label: 'Rain',
-    value: '0.4',
-    unit: 'mm',
-    range: '0-3 mm',
-    accent: 'teal',
-    path: 'M4 68 L36 68 L68 68 L100 62 L132 66 L164 50 L196 64',
-    area:
-      'M4 68 L36 68 L68 68 L100 62 L132 66 L164 50 L196 64 L196 74 L4 74 Z',
-    dot: { x: 196, y: 64 },
-  },
-]
+const timeframeMs: Record<Exclude<Timeframe, 'all'>, number> = {
+  '1h': 1 * 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '12h': 12 * 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '3d': 3 * 24 * 60 * 60 * 1000,
+}
+
+const defaultGreeting: GeminiMessage = {
+  role: 'assistant',
+  text: 'Hi! Ask me anything.',
+}
+
+const METRIC_MODAL_ANIMATION_MS = 220
 
 const accentStyle = (accent: string): CSSProperties =>
   ({
@@ -97,12 +99,8 @@ const accentStyle = (accent: string): CSSProperties =>
 
 const meterStyle = (value: number): CSSProperties =>
   ({
-    '--value': `${value}%`,
+    '--value': `${Math.max(0, Math.min(100, value))}%`,
   }) as CSSProperties
-
-const gaugeNeedleStyle: CSSProperties = {
-  '--needle-rotation': '32deg',
-} as CSSProperties
 
 const formatLocalTime = (date: Date) =>
   date.toLocaleTimeString([], {
@@ -111,18 +109,217 @@ const formatLocalTime = (date: Date) =>
     second: '2-digit',
   })
 
-type GeminiMessage = {
-  role: 'user' | 'assistant'
-  text: string
+const formatMetricValue = (metricId: MetricId, value: number | null) => {
+  if (value === null || Number.isNaN(value)) {
+    return '--'
+  }
+
+  if (metricId === 'humidity') {
+    return String(Math.round(value))
+  }
+
+  return value.toFixed(1)
 }
 
-const defaultGreeting: GeminiMessage = {
-  role: 'assistant',
-  text: 'Hi! Ask me anything.',
+const formatMetricDelta = (metricId: MetricId, delta: number | null) => {
+  if (delta === null || Number.isNaN(delta)) {
+    return '--'
+  }
+
+  if (delta === 0) {
+    return '0'
+  }
+
+  if (metricId === 'humidity') {
+    const rounded = Math.round(delta)
+    return `${rounded > 0 ? '+' : ''}${rounded}`
+  }
+
+  return `${delta > 0 ? '+' : ''}${delta.toFixed(1)}`
 }
+
+const trendClassFromDelta = (delta: number | null) => {
+  if (delta === null || delta === 0) {
+    return 'trend-flat'
+  }
+
+  return delta > 0 ? 'trend-up' : 'trend-down'
+}
+
+const metricNote = (metricId: MetricId, value: number | null) => {
+  if (value === null || Number.isNaN(value)) {
+    return 'No data'
+  }
+
+  if (metricId === 'temperature') {
+    if (value >= 34) return 'Very warm'
+    if (value >= 28) return 'Warm'
+    if (value >= 22) return 'Mild'
+    return 'Cool'
+  }
+
+  if (metricId === 'humidity') {
+    if (value >= 70) return 'Humid'
+    if (value >= 45) return 'Comfort'
+    return 'Dry'
+  }
+
+  if (value >= 25) return 'Windy'
+  if (value >= 12) return 'Breezy'
+  return 'Calm'
+}
+
+const rangeLabel = (metricId: MetricId, points: MetricPoint[], unit: string) => {
+  if (points.length === 0) {
+    return `No historical ${metricStyleConfig[metricId].defaultLabel.toLowerCase()} data`
+  }
+
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+
+  for (const point of points) {
+    if (point.value < min) min = point.value
+    if (point.value > max) max = point.value
+  }
+
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return 'No data'
+  }
+
+  if (metricId === 'humidity') {
+    return `${Math.round(min)}-${Math.round(max)} ${unit}`
+  }
+
+  return `${min.toFixed(1)}-${max.toFixed(1)} ${unit}`
+}
+
+const normalizeMeterValue = (metric: HistoricalMetric | null) => {
+  if (!metric || metric.latest === null || metric.min === null || metric.max === null) {
+    return 0
+  }
+
+  if (metric.max === metric.min) {
+    return 50
+  }
+
+  return ((metric.latest - metric.min) / (metric.max - metric.min)) * 100
+}
+
+const filterByTimeframe = (points: MetricPoint[], timeframe: Timeframe) => {
+  if (timeframe === 'all' || points.length === 0) {
+    return points
+  }
+
+  const latest = new Date(points[points.length - 1].time).getTime()
+  if (Number.isNaN(latest)) {
+    return points
+  }
+
+  const threshold = latest - timeframeMs[timeframe]
+  return points.filter((point) => {
+    const timestamp = new Date(point.time).getTime()
+    return Number.isFinite(timestamp) && timestamp >= threshold
+  })
+}
+
+const resamplePoints = (points: MetricPoint[], maxPoints: number) => {
+  if (points.length <= maxPoints) {
+    return points
+  }
+
+  const sampled: MetricPoint[] = []
+  const step = (points.length - 1) / (maxPoints - 1)
+
+  for (let i = 0; i < maxPoints; i += 1) {
+    sampled.push(points[Math.round(i * step)])
+  }
+
+  return sampled
+}
+
+const buildChartGeometry = (
+  points: MetricPoint[],
+  width: number,
+  height: number,
+  padding: number,
+): ChartGeometry | null => {
+  if (points.length === 0) {
+    return null
+  }
+
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+
+  for (const point of points) {
+    if (point.value < min) min = point.value
+    if (point.value > max) max = point.value
+  }
+
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return null
+  }
+
+  const valueRange = max - min || 1
+  const chartWidth = width - padding * 2
+  const chartHeight = height - padding * 2
+
+  const chartPoints = points.map((point, index) => {
+    const xRatio = points.length === 1 ? 0 : index / (points.length - 1)
+    const normalizedValue = (point.value - min) / valueRange
+
+    const x = padding + xRatio * chartWidth
+    const y = padding + (1 - normalizedValue) * chartHeight
+
+    return {
+      x,
+      y,
+      time: point.time,
+      value: point.value,
+    }
+  })
+
+  const linePath = chartPoints
+    .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(' ')
+
+  const baseline = height - padding
+  const first = chartPoints[0]
+  const last = chartPoints[chartPoints.length - 1]
+  const areaPath = `${linePath} L${last.x.toFixed(2)} ${baseline.toFixed(2)} L${first.x.toFixed(2)} ${baseline.toFixed(2)} Z`
+
+  return {
+    width,
+    height,
+    padding,
+    min,
+    max,
+    linePath,
+    areaPath,
+    dot: { x: last.x, y: last.y },
+    points: chartPoints,
+  }
+}
+
+const formatTimestamp = (iso: string) =>
+  new Date(iso).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
 
 function App() {
   const [localTime, setLocalTime] = useState(() => formatLocalTime(new Date()))
+  const [historyMetrics, setHistoryMetrics] = useState<
+    Record<MetricId, HistoricalMetric> | null
+  >(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+
+  const [expandedMetric, setExpandedMetric] = useState<MetricId | null>(null)
+  const [isMetricClosing, setIsMetricClosing] = useState(false)
+  const [expandedTimeframe, setExpandedTimeframe] = useState<Timeframe>('12h')
+  const [expandedHoverIndex, setExpandedHoverIndex] = useState<number | null>(null)
+
   const [geminiOpen, setGeminiOpen] = useState(false)
   const [messages, setMessages] = useState<GeminiMessage[]>([defaultGreeting])
   const [input, setInput] = useState('')
@@ -136,6 +333,209 @@ function App() {
 
     return () => window.clearInterval(intervalId)
   }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    const loadMetrics = async () => {
+      try {
+        const response = await fetch('/api/history/metrics', {
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          throw new Error('Failed to load historical metrics.')
+        }
+
+        const payload = (await response.json()) as HistoryApiResponse
+        setHistoryMetrics(payload.metrics)
+        setHistoryError(null)
+      } catch (loadError) {
+        if (controller.signal.aborted) {
+          return
+        }
+
+        const message =
+          loadError instanceof Error
+            ? loadError.message
+            : 'Failed to load historical metrics.'
+        setHistoryError(message)
+      }
+    }
+
+    void loadMetrics()
+
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    if (!isMetricClosing) {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setExpandedMetric(null)
+      setIsMetricClosing(false)
+    }, METRIC_MODAL_ANIMATION_MS)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [isMetricClosing])
+
+  const openExpandedMetric = useCallback((metricId: MetricId) => {
+    setExpandedMetric(metricId)
+    setExpandedTimeframe('12h')
+    setExpandedHoverIndex(null)
+    setIsMetricClosing(false)
+  }, [])
+
+  const closeExpandedMetric = useCallback(() => {
+    if (!expandedMetric || isMetricClosing) {
+      return
+    }
+
+    setIsMetricClosing(true)
+  }, [expandedMetric, isMetricClosing])
+
+  useEffect(() => {
+    if (!expandedMetric) {
+      return
+    }
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeExpandedMetric()
+      }
+    }
+
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [expandedMetric, closeExpandedMetric])
+
+  useEffect(() => {
+    setExpandedHoverIndex(null)
+  }, [expandedMetric, expandedTimeframe])
+
+  const latestObservationTime = useMemo(() => {
+    if (!historyMetrics) {
+      return null
+    }
+
+    const latest = historyMetrics.temperature.points.at(-1)
+    if (!latest) {
+      return null
+    }
+
+    return formatTimestamp(latest.time)
+  }, [historyMetrics])
+
+  const quickMetrics = useMemo(() => {
+    const temperature = historyMetrics?.temperature ?? null
+    const humidity = historyMetrics?.humidity ?? null
+    const wind = historyMetrics?.wind ?? null
+
+    return [
+      {
+        label: 'Temperature',
+        value: formatMetricValue('temperature', temperature?.latest ?? null),
+        unit: temperature?.unit ?? metricStyleConfig.temperature.fallbackUnit,
+        delta: formatMetricDelta('temperature', temperature?.delta ?? null),
+        note: metricNote('temperature', temperature?.latest ?? null),
+        accent: metricStyleConfig.temperature.accent,
+        bar: normalizeMeterValue(temperature),
+      },
+      {
+        label: 'Humidity',
+        value: formatMetricValue('humidity', humidity?.latest ?? null),
+        unit: humidity?.unit ?? metricStyleConfig.humidity.fallbackUnit,
+        delta: formatMetricDelta('humidity', humidity?.delta ?? null),
+        note: metricNote('humidity', humidity?.latest ?? null),
+        accent: metricStyleConfig.humidity.accent,
+        bar: normalizeMeterValue(humidity),
+      },
+      {
+        label: 'Wind',
+        value: formatMetricValue('wind', wind?.latest ?? null),
+        unit: wind?.unit ?? metricStyleConfig.wind.fallbackUnit,
+        delta: formatMetricDelta('wind', wind?.delta ?? null),
+        note: metricNote('wind', wind?.latest ?? null),
+        accent: metricStyleConfig.wind.accent,
+        bar: normalizeMeterValue(wind),
+      },
+    ]
+  }, [historyMetrics])
+
+  const trendCards = useMemo(() => {
+    return metricOrder.map((metricId) => {
+      const metric = historyMetrics?.[metricId] ?? null
+      const points = metric ? filterByTimeframe(metric.points, '12h') : []
+      const previewPoints = resamplePoints(points, 64)
+      const geometry = buildChartGeometry(previewPoints, 200, 80, 4)
+
+      return {
+        metricId,
+        label: metric?.label ?? metricStyleConfig[metricId].defaultLabel,
+        value: formatMetricValue(metricId, metric?.latest ?? null),
+        unit: metric?.unit ?? metricStyleConfig[metricId].fallbackUnit,
+        range: rangeLabel(
+          metricId,
+          points,
+          metric?.unit ?? metricStyleConfig[metricId].fallbackUnit,
+        ),
+        accent: metricStyleConfig[metricId].accent,
+        geometry,
+      }
+    })
+  }, [historyMetrics])
+
+  const windNow = historyMetrics?.wind.latest ?? null
+  const gaugeNeedleStyle: CSSProperties = useMemo(() => {
+    if (windNow === null || Number.isNaN(windNow)) {
+      return { '--needle-rotation': '0deg' } as CSSProperties
+    }
+
+    const normalized = Math.max(0, Math.min(1, windNow / 35))
+    const rotation = -80 + normalized * 160
+    return { '--needle-rotation': `${rotation}deg` } as CSSProperties
+  }, [windNow])
+
+  const expandedMetricData = expandedMetric ? historyMetrics?.[expandedMetric] ?? null : null
+
+  const expandedPoints = useMemo(() => {
+    if (!expandedMetricData) {
+      return []
+    }
+
+    return filterByTimeframe(expandedMetricData.points, expandedTimeframe)
+  }, [expandedMetricData, expandedTimeframe])
+
+  const expandedDisplayPoints = useMemo(
+    () => resamplePoints(expandedPoints, 500),
+    [expandedPoints],
+  )
+
+  const expandedGeometry = useMemo(
+    () => buildChartGeometry(expandedDisplayPoints, 1000, 420, 28),
+    [expandedDisplayPoints],
+  )
+
+  const expandedHoverPoint =
+    expandedGeometry &&
+    expandedHoverIndex !== null &&
+    expandedHoverIndex >= 0 &&
+    expandedHoverIndex < expandedGeometry.points.length
+      ? expandedGeometry.points[expandedHoverIndex]
+      : null
+
+  const expandedTooltipStyle = useMemo(() => {
+    if (!expandedGeometry || !expandedHoverPoint) {
+      return undefined
+    }
+
+    return {
+      left: `${(expandedHoverPoint.x / expandedGeometry.width) * 100}%`,
+      top: `${(expandedHoverPoint.y / expandedGeometry.height) * 100}%`,
+    }
+  }, [expandedGeometry, expandedHoverPoint])
 
   const startNewConversation = () => {
     setMessages([defaultGreeting])
@@ -169,13 +569,29 @@ function App() {
       const payload = await response.json()
       const text = String(payload?.text ?? '').trim() || 'No response received.'
       setMessages((current) => [...current, { role: 'assistant', text }])
-    } catch (err) {
+    } catch (sendError) {
       const message =
-        err instanceof Error ? err.message : 'Gemini request failed.'
+        sendError instanceof Error ? sendError.message : 'Gemini request failed.'
       setError(message)
     } finally {
       setIsSending(false)
     }
+  }
+
+  const handleExpandedChartMove = (event: ReactMouseEvent<SVGSVGElement>) => {
+    if (!expandedGeometry) {
+      return
+    }
+
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const xInSvg = ((event.clientX - bounds.left) / bounds.width) * expandedGeometry.width
+
+    const relative = (xInSvg - expandedGeometry.padding) /
+      (expandedGeometry.width - expandedGeometry.padding * 2)
+
+    const clamped = Math.max(0, Math.min(1, relative))
+    const pointIndex = Math.round(clamped * (expandedGeometry.points.length - 1))
+    setExpandedHoverIndex(pointIndex)
   }
 
   return (
@@ -186,7 +602,9 @@ function App() {
           <div className="brand-text">
             <p className="eyebrow">Weather Station</p>
             <h1>Harbor Field Lab - North Deck</h1>
-            <p className="subtle">Live conditions - Updated 2 min ago</p>
+            <p className="subtle">
+              Historical sync {latestObservationTime ? `- ${latestObservationTime}` : '- Loading...'}
+            </p>
           </div>
         </div>
         <div className="topbar-meta">
@@ -200,6 +618,8 @@ function App() {
           </div>
         </div>
       </header>
+
+      {historyError && <div className="history-error">{historyError}</div>}
 
       <main className="dashboard-grid">
         <section className="card summary-card">
@@ -229,35 +649,31 @@ function App() {
             <span className="chip">Calibrated</span>
           </div>
           <div className="metrics-grid">
-            {quickMetrics.map((metric) => {
-              const trendClass = metric.delta.startsWith('+')
-                ? 'trend-up'
-                : metric.delta.startsWith('-')
-                  ? 'trend-down'
-                  : 'trend-flat'
-
-              return (
-                <div
-                  className="mini-card"
-                  key={metric.label}
-                  style={accentStyle(metric.accent)}
-                >
-                  <div className="mini-top">
-                    <span className="mini-label">{metric.label}</span>
-                    <span className={`mini-trend ${trendClass}`}>
-                      {metric.delta}
-                    </span>
-                  </div>
-                  <div className="mini-value">
-                    {metric.value} <span>{metric.unit}</span>
-                  </div>
-                  <p className="mini-note">{metric.note}</p>
-                  <div className="mini-meter" style={meterStyle(metric.bar)}>
-                    <span />
-                  </div>
+            {quickMetrics.map((metric) => (
+              <div
+                className="mini-card"
+                key={metric.label}
+                style={accentStyle(metric.accent)}
+              >
+                <div className="mini-top">
+                  <span className="mini-label">{metric.label}</span>
+                  <span className={`mini-trend ${trendClassFromDelta(
+                    metric.delta === '--' || metric.delta === 'Light'
+                      ? null
+                      : Number(metric.delta),
+                  )}`}>
+                    {metric.delta}
+                  </span>
                 </div>
-              )
-            })}
+                <div className="mini-value">
+                  {metric.value} <span>{metric.unit}</span>
+                </div>
+                <p className="mini-note">{metric.note}</p>
+                <div className="mini-meter" style={meterStyle(metric.bar)}>
+                  <span />
+                </div>
+              </div>
+            ))}
           </div>
         </section>
 
@@ -267,7 +683,9 @@ function App() {
               <p className="eyebrow">Wind Focus</p>
               <h2>Wind Intensity</h2>
             </div>
-            <span className="chip chip-warn">Breezy</span>
+            <span className="chip chip-warn">
+              {metricNote('wind', historyMetrics?.wind.latest ?? null)}
+            </span>
           </div>
           <div className="gauge-wrap">
             <div className="gauge">
@@ -293,9 +711,16 @@ function App() {
               <div className="gauge-center" />
             </div>
             <div className="gauge-readout">
-              <span className="gauge-value">12</span>
+              <span className="gauge-value">
+                {formatMetricValue('wind', historyMetrics?.wind.latest ?? null)}
+              </span>
               <span className="gauge-unit">km/h</span>
-              <span className="gauge-sub">Gusts up to 16 km/h</span>
+              <span className="gauge-sub">
+                {historyMetrics?.wind.max !== null &&
+                historyMetrics?.wind.max !== undefined
+                  ? `Peak ${historyMetrics.wind.max.toFixed(1)} km/h`
+                  : 'Historical wind unavailable'}
+              </span>
             </div>
             <div className="gauge-scale">
               <span>Calm</span>
@@ -305,10 +730,12 @@ function App() {
         </section>
 
         {trendCards.map((metric, index) => (
-          <section
-            className="card trend-card"
-            key={metric.label}
+          <button
+            type="button"
+            className="card trend-card trend-card-button"
+            key={metric.metricId}
             style={accentStyle(metric.accent)}
+            onClick={() => openExpandedMetric(metric.metricId)}
           >
             <div className="trend-header">
               <div>
@@ -326,50 +753,187 @@ function App() {
               aria-label={`${metric.label} trend`}
             >
               <defs>
-                <linearGradient
-                  id={`spark-${index}`}
-                  x1="0%"
-                  y1="0%"
-                  x2="100%"
-                  y2="0%"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor="var(--accent)"
-                    stopOpacity="0.2"
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor="var(--accent)"
-                    stopOpacity="0.7"
-                  />
+                <linearGradient id={`spark-${index}`} x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.2" />
+                  <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.7" />
                 </linearGradient>
               </defs>
-              <path
-                className="sparkline-area"
-                d={metric.area}
-                fill={`url(#spark-${index})`}
-              />
-              <path className="sparkline-line" d={metric.path} />
-              <circle
-                className="sparkline-dot"
-                cx={metric.dot.x}
-                cy={metric.dot.y}
-                r="4"
-              />
+              {metric.geometry ? (
+                <>
+                  <path
+                    className="sparkline-area"
+                    d={metric.geometry.areaPath}
+                    fill={`url(#spark-${index})`}
+                  />
+                  <path className="sparkline-line" d={metric.geometry.linePath} />
+                  <circle
+                    className="sparkline-dot"
+                    cx={metric.geometry.dot.x}
+                    cy={metric.geometry.dot.y}
+                    r="4"
+                  />
+                </>
+              ) : (
+                <path className="sparkline-line" d="M4 40 L196 40" />
+              )}
             </svg>
             <div className="trend-footer">{metric.range}</div>
-          </section>
+          </button>
         ))}
       </main>
 
       <footer className="dashboard-footer">
         <div className="footer-left">
           <span className="footer-dot" />
-          Mock data for UI preview only
+          Historical metrics powered by backend CSV API
         </div>
-        <div className="footer-right">Weather Station UI Mockup</div>
+        <div className="footer-right">Weather Station UI</div>
       </footer>
+
+      {expandedMetricData && expandedGeometry && (
+        <div
+          className={`metric-modal ${isMetricClosing ? 'closing' : ''}`}
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            type="button"
+            className="metric-modal-backdrop"
+            aria-label="Close expanded metric"
+            onClick={closeExpandedMetric}
+          />
+          <section
+            className="metric-modal-panel"
+            style={accentStyle(metricStyleConfig[expandedMetricData.key].accent)}
+          >
+            <div className="metric-modal-header">
+              <div>
+                <p className="eyebrow">Historical Metric</p>
+                <h3>{expandedMetricData.label}</h3>
+                <p className="metric-modal-subtitle">
+                  {rangeLabel(
+                    expandedMetricData.key,
+                    expandedPoints,
+                    expandedMetricData.unit,
+                  )}
+                </p>
+              </div>
+              <div className="metric-modal-actions">
+                <div className="timeframe-group" role="tablist" aria-label="Timeframe selector">
+                  {timeframeOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`timeframe-chip ${
+                        expandedTimeframe === option.value ? 'active' : ''
+                      }`}
+                      onClick={() => setExpandedTimeframe(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="metric-close"
+                  onClick={closeExpandedMetric}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="metric-modal-value">
+              {formatMetricValue(expandedMetricData.key, expandedMetricData.latest)}{' '}
+              <span>{expandedMetricData.unit}</span>
+            </div>
+
+            <div className="expanded-chart-wrap">
+              <svg
+                className="expanded-sparkline"
+                viewBox={`0 0 ${expandedGeometry.width} ${expandedGeometry.height}`}
+                role="img"
+                aria-label={`${expandedMetricData.label} historical graph`}
+                onMouseMove={handleExpandedChartMove}
+                onMouseLeave={() => setExpandedHoverIndex(null)}
+              >
+                <defs>
+                  <linearGradient
+                    id="spark-expanded"
+                    x1="0%"
+                    y1="0%"
+                    x2="100%"
+                    y2="0%"
+                  >
+                    <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.2" />
+                    <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.72" />
+                  </linearGradient>
+                </defs>
+                <path
+                  className="sparkline-area"
+                  d={expandedGeometry.areaPath}
+                  fill="url(#spark-expanded)"
+                />
+                <path className="sparkline-line" d={expandedGeometry.linePath} />
+                <circle
+                  className="sparkline-dot"
+                  cx={expandedGeometry.dot.x}
+                  cy={expandedGeometry.dot.y}
+                  r="5"
+                />
+                {expandedHoverPoint && (
+                  <>
+                    <line
+                      className="sparkline-crosshair"
+                      x1={expandedHoverPoint.x}
+                      y1={expandedGeometry.padding}
+                      x2={expandedHoverPoint.x}
+                      y2={expandedGeometry.height - expandedGeometry.padding}
+                    />
+                    <circle
+                      className="sparkline-hover-dot"
+                      cx={expandedHoverPoint.x}
+                      cy={expandedHoverPoint.y}
+                      r="6"
+                    />
+                  </>
+                )}
+              </svg>
+
+              {expandedHoverPoint && expandedTooltipStyle && (
+                <div className="chart-tooltip" style={expandedTooltipStyle}>
+                  <span>{formatTimestamp(expandedHoverPoint.time)}</span>
+                  <strong>
+                    {formatMetricValue(expandedMetricData.key, expandedHoverPoint.value)}{' '}
+                    {expandedMetricData.unit}
+                  </strong>
+                </div>
+              )}
+            </div>
+
+            <div className="expanded-stats">
+              <div>
+                <span>Min</span>
+                <strong>
+                  {formatMetricValue(expandedMetricData.key, expandedGeometry.min)}{' '}
+                  {expandedMetricData.unit}
+                </strong>
+              </div>
+              <div>
+                <span>Max</span>
+                <strong>
+                  {formatMetricValue(expandedMetricData.key, expandedGeometry.max)}{' '}
+                  {expandedMetricData.unit}
+                </strong>
+              </div>
+              <div>
+                <span>Points</span>
+                <strong>{expandedPoints.length}</strong>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
 
       <button
         className="gemini-fab"
@@ -445,7 +1009,7 @@ function App() {
               if (event.key !== 'Enter' || event.shiftKey) {
                 return
               }
-              if (event.isComposing) {
+              if (event.nativeEvent.isComposing) {
                 return
               }
               event.preventDefault()

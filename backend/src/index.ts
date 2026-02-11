@@ -2,6 +2,7 @@ import 'dotenv/config'
 import cors from 'cors'
 import express from 'express'
 import { geminiRouter } from './routes/gemini.js'
+import { historyRouter } from './routes/history.js'
 
 const app = express()
 
@@ -13,6 +14,7 @@ app.get('/health', (_req, res) => {
 })
 
 app.use('/api/gemini', geminiRouter)
+app.use('/api/history', historyRouter)
 
 const port = Number(process.env.PORT) || 5050
 app.listen(port, () => {
