@@ -732,6 +732,14 @@
   font-weight: 600;
   padding: 10px 14px;
   cursor: pointer;
+  transition: opacity 0.2s ease, filter 0.2s ease, box-shadow 0.2s ease;
+}
+
+.gemini-input button:disabled {
+  opacity: 0.55;
+  filter: saturate(0.75);
+  box-shadow: none;
+  cursor: not-allowed;
 }
 
 @keyframes card-enter {

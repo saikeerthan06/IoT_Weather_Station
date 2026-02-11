@@ -441,6 +441,18 @@ function App() {
             placeholder="Ask Gemini anything..."
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey) {
+                return
+              }
+              if (event.isComposing) {
+                return
+              }
+              event.preventDefault()
+              if (!isSending) {
+                void sendToGemini()
+              }
+            }}
             disabled={isSending}
           />
           <button type="submit" disabled={isSending || !input.trim()}>
