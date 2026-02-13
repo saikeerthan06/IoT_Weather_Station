@@ -1,23 +1,45 @@
-# IoT_Weather_Station
+# IoT Weather Station
 
 Repository for an IoT Weather Station project.
 
 ## Tech Stack
 - Frontend: React + TypeScript + Vite
+- Backend: Node.js
 
-## Getting Started
+## Prerequisites
+- Node.js 18+ and npm
 
-```bash
-npm install
-npm run dev
-```
+## Setup
+1. Create the backend environment file.
+- macOS/Linux: `cp backend/.env.example backend/.env`
+- Windows (PowerShell): `Copy-Item backend\.env.example backend\.env`
+- Windows (CMD): `copy backend\.env.example backend\.env`
 
-## Build
+2. Add your Gemini key.
+- Open `backend/.env`
+- Set `GEMINI_API_KEY=your_key_here`
 
-```bash
-npm run build
-npm run preview
-```
+## Run (macOS/Linux)
+1. Make the helper script executable.
+- `chmod +x run_dev.sh`
+
+2. Start both dev servers.
+- `./run_dev.sh`
+
+3. Open the frontend.
+- Look for the Vite URL like `http://localhost:5173/`
+
+## Run (Windows)
+1. Start the frontend dev server in the project root.
+- `npm run dev`
+
+2. Start the backend dev server in another terminal.
+- `cd backend`
+- `npm run dev`
+
+3. Open the frontend.
+- Look for the Vite URL like `http://localhost:5173/`
 
 ## Notes
-This project was scaffolded with Vite and uses the standard Vite React + TypeScript tooling.
+- The UI requires a valid Gemini API key.
+- The backend default port is `5050`.
