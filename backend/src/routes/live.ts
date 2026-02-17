@@ -24,21 +24,20 @@ type SensorRow = {
 
 const router = Router()
 
-const WINDOW_PRESETS: Record<string, number | null> = {
+const WINDOW_PRESETS: Record<string, number> = {
   '1h': 1 * 60 * 60 * 1000,
+  '2h': 2 * 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
+  '10h': 10 * 60 * 60 * 1000,
   '12h': 12 * 60 * 60 * 1000,
-  '24h': 24 * 60 * 60 * 1000,
-  '3d': 3 * 24 * 60 * 60 * 1000,
-  all: null,
 }
 
-const DEFAULT_WINDOW = '3d'
+const DEFAULT_WINDOW = '12h'
 
 const sanitizeTableName = (raw: string) => {
   const trimmed = raw.trim()
   if (!/^[a-zA-Z0-9_]+$/.test(trimmed)) {
-    throw new Error('Invalid historical table name.')
+    throw new Error('Invalid sensor table name.')
   }
   return trimmed
 }
@@ -100,20 +99,20 @@ const parseWindowMs = (raw: string | undefined) => {
 
 router.get('/metrics', async (req, res) => {
   try {
-    const tableName = sanitizeTableName(process.env.HISTORICAL_TABLE ?? 'historical_data')
+    const tableName = sanitizeTableName(process.env.SENSOR_TABLE ?? 'sensor_data')
     const { key: windowKey, ms: windowMs } = parseWindowMs(
       typeof req.query.window === 'string' ? req.query.window : undefined,
     )
 
-    const baseQuery = `SELECT time, temp, humi, pres FROM ${tableName}`
-    const query =
-      windowMs === null
-        ? `${baseQuery} ORDER BY time::timestamptz ASC`
-        : `${baseQuery} WHERE time::timestamptz >= $1::timestamptz ORDER BY time::timestamptz ASC`
-    const params =
-      windowMs === null ? [] : [new Date(Date.now() - windowMs).toISOString()]
-
-    const { rows } = await db.query<SensorRow>(query, params)
+    const windowStart = new Date(Date.now() - windowMs).toISOString()
+    const { rows } = await db.query<SensorRow>(
+      `SELECT time, temp, humi, pres
+       FROM ${tableName}
+       WHERE time::timestamptz >= GREATEST($1::timestamptz, CURRENT_DATE::timestamptz)
+         AND time::timestamptz < (CURRENT_DATE + INTERVAL '1 day')::timestamptz
+       ORDER BY time::timestamptz ASC`,
+      [windowStart],
+    )
 
     const temperaturePoints: Array<{ time: string; value: number }> = []
     const humidityPoints: Array<{ time: string; value: number }> = []
@@ -177,9 +176,9 @@ router.get('/metrics', async (req, res) => {
     })
   } catch (error) {
     // eslint-disable-next-line no-console
-    console.error('Failed to read historical metrics', error)
-    return res.status(500).json({ error: 'Failed to load historical metrics.' })
+    console.error('Failed to load live metrics', error)
+    return res.status(500).json({ error: 'Failed to load live metrics.' })
   }
 })
 
-export { router as historyRouter }
+export { router as liveRouter }

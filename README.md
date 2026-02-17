@@ -19,6 +19,13 @@ Repository for an IoT Weather Station project.
 - Open `backend/.env`
 - Set `GEMINI_API_KEY=your_key_here`
 
+3. Configure Postgres access (SSH tunnel on your Mac recommended).
+- Open `backend/.env`
+- Set `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`
+- Set `SENSOR_TABLE=sensor_data`
+- Set `HISTORICAL_TABLE=historical_data`
+- Optional: `ROLLUP_ENABLED=true`
+
 ## Run (macOS/Linux)
 1. Make the helper script executable.
 - `chmod +x run_dev.sh`

@@ -4,15 +4,18 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-type MetricId = 'temperature' | 'humidity' | 'wind'
-type Timeframe = '1h' | '6h' | '12h' | '24h' | '3d' | 'all'
+type MetricId = 'temperature' | 'humidity' | 'pressure'
+type LiveTimeframe = '1h' | '2h' | '6h' | '10h' | '12h'
+type HistoricalTimeframe = '1h' | '6h' | '12h' | '24h' | '3d' | 'all'
+type ExpandedTimeframe = LiveTimeframe | HistoricalTimeframe
+type HistoricalWindow = HistoricalTimeframe
 
 type MetricPoint = {
   time: string
   value: number
 }
 
-type HistoricalMetric = {
+type MetricSeries = {
   key: MetricId
   label: string
   unit: string
@@ -24,8 +27,8 @@ type HistoricalMetric = {
   available: boolean
 }
 
-type HistoryApiResponse = {
-  metrics: Record<MetricId, HistoricalMetric>
+type MetricsApiResponse = {
+  metrics: Record<MetricId, MetricSeries>
 }
 
 type GeminiMessage = {
@@ -47,7 +50,7 @@ type ChartGeometry = {
 
 type OverviewStatus = 'Optimal' | 'Good' | 'Watch' | 'Alert'
 
-const metricOrder: MetricId[] = ['temperature', 'humidity', 'wind']
+const metricOrder: MetricId[] = ['temperature', 'humidity', 'pressure']
 
 const metricStyleConfig: Record<
   MetricId,
@@ -63,25 +66,35 @@ const metricStyleConfig: Record<
     fallbackUnit: '%',
     defaultLabel: 'Humidity',
   },
-  wind: {
-    accent: 'lime',
-    fallbackUnit: 'km/h',
-    defaultLabel: 'Wind',
+  pressure: {
+    accent: 'teal',
+    fallbackUnit: 'hPa',
+    defaultLabel: 'Pressure',
   },
 }
 
-const timeframeOptions: Array<{ value: Timeframe; label: string }> = [
+const liveTimeframeOptions: Array<{ value: LiveTimeframe; label: string }> = [
+  { value: '1h', label: '1H' },
+  { value: '2h', label: '2H' },
+  { value: '6h', label: '6H' },
+  { value: '10h', label: '10H' },
+  { value: '12h', label: '12H' },
+]
+
+const historicalTimeframeOptions: Array<{ value: HistoricalTimeframe; label: string }> = [
+  { value: 'all', label: 'All' },
   { value: '1h', label: '1H' },
   { value: '6h', label: '6H' },
   { value: '12h', label: '12H' },
   { value: '24h', label: '24H' },
   { value: '3d', label: '3D' },
-  { value: 'all', label: 'All' },
 ]
 
-const timeframeMs: Record<Exclude<Timeframe, 'all'>, number> = {
+const timeframeMs: Record<Exclude<ExpandedTimeframe, 'all'>, number> = {
   '1h': 1 * 60 * 60 * 1000,
+  '2h': 2 * 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
+  '10h': 10 * 60 * 60 * 1000,
   '12h': 12 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
   '3d': 3 * 24 * 60 * 60 * 1000,
@@ -94,6 +107,13 @@ const defaultGreeting: GeminiMessage = {
 
 const METRIC_MODAL_ANIMATION_MS = 220
 const Y_AXIS_TICK_COUNT = 6
+const LIVE_SNAPSHOT_POLL_MS = 60_000
+const LIVE_MODAL_POLL_MS = 10_000
+const HISTORICAL_POLL_MS = 15 * 60_000
+const SNAPSHOT_WINDOW: LiveTimeframe = '12h'
+const HISTORICAL_WINDOW: HistoricalWindow = 'all'
+const PRESSURE_GAUGE_MIN = 980
+const PRESSURE_GAUGE_MAX = 1040
 
 const accentStyle = (accent: string): CSSProperties =>
   ({
@@ -117,6 +137,11 @@ const formatMetricValue = (metricId: MetricId, value: number | null) => {
     return '--'
   }
 
+  if (metricId === 'pressure') {
+    const truncated = Math.trunc(value * 100) / 100
+    return truncated.toFixed(2)
+  }
+
   if (metricId === 'humidity') {
     return String(Math.round(value))
   }
@@ -130,7 +155,12 @@ const formatMetricDelta = (metricId: MetricId, delta: number | null) => {
   }
 
   if (delta === 0) {
-    return '0'
+    return metricId === 'pressure' ? '0.00' : '0'
+  }
+
+  if (metricId === 'pressure') {
+    const truncated = Math.trunc(delta * 100) / 100
+    return `${truncated > 0 ? '+' : ''}${truncated.toFixed(2)}`
   }
 
   if (metricId === 'humidity') {
@@ -167,14 +197,20 @@ const metricNote = (metricId: MetricId, value: number | null) => {
     return 'Dry'
   }
 
-  if (value >= 25) return 'Windy'
-  if (value >= 12) return 'Breezy'
-  return 'Calm'
+  if (value >= 1025) return 'High pressure'
+  if (value >= 1012) return 'Stable'
+  if (value >= 1000) return 'Low'
+  return 'Very low'
 }
 
-const rangeLabel = (metricId: MetricId, points: MetricPoint[], unit: string) => {
+const rangeLabel = (
+  metricId: MetricId,
+  points: MetricPoint[],
+  unit: string,
+  sourceLabel: 'live' | 'historical',
+) => {
   if (points.length === 0) {
-    return `No historical ${metricStyleConfig[metricId].defaultLabel.toLowerCase()} data`
+    return `No ${sourceLabel} ${metricStyleConfig[metricId].defaultLabel.toLowerCase()} data`
   }
 
   let min = Number.POSITIVE_INFINITY
@@ -193,10 +229,16 @@ const rangeLabel = (metricId: MetricId, points: MetricPoint[], unit: string) => 
     return `${Math.round(min)}-${Math.round(max)} ${unit}`
   }
 
+  if (metricId === 'pressure') {
+    const minTrunc = Math.trunc(min * 100) / 100
+    const maxTrunc = Math.trunc(max * 100) / 100
+    return `${minTrunc.toFixed(2)}-${maxTrunc.toFixed(2)} ${unit}`
+  }
+
   return `${min.toFixed(1)}-${max.toFixed(1)} ${unit}`
 }
 
-const normalizeMeterValue = (metric: HistoricalMetric | null) => {
+const normalizeMeterValue = (metric: MetricSeries | null) => {
   if (!metric || metric.latest === null || metric.min === null || metric.max === null) {
     return 0
   }
@@ -208,8 +250,12 @@ const normalizeMeterValue = (metric: HistoricalMetric | null) => {
   return ((metric.latest - metric.min) / (metric.max - metric.min)) * 100
 }
 
-const filterByTimeframe = (points: MetricPoint[], timeframe: Timeframe) => {
-  if (timeframe === 'all' || points.length === 0) {
+const filterByTimeframe = (points: MetricPoint[], timeframe: ExpandedTimeframe) => {
+  if (points.length === 0) {
+    return points
+  }
+
+  if (timeframe === 'all') {
     return points
   }
 
@@ -374,17 +420,26 @@ const statusChipClass = (status: OverviewStatus) => {
 
 function App() {
   const [localTime, setLocalTime] = useState(() => formatLocalTime(new Date()))
-  const [historyMetrics, setHistoryMetrics] = useState<
-    Record<MetricId, HistoricalMetric> | null
+  const [snapshotMetrics, setSnapshotMetrics] = useState<
+    Record<MetricId, MetricSeries> | null
   >(null)
-  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [snapshotError, setSnapshotError] = useState<string | null>(null)
+  const [historicalMetrics, setHistoricalMetrics] = useState<
+    Record<MetricId, MetricSeries> | null
+  >(null)
+  const [historicalError, setHistoricalError] = useState<string | null>(null)
+  const [expandedMetrics, setExpandedMetrics] = useState<
+    Record<MetricId, MetricSeries> | null
+  >(null)
+  const [expandedError, setExpandedError] = useState<string | null>(null)
   const [isOverviewModalOpen, setIsOverviewModalOpen] = useState(false)
   const [isOverviewFormulaOpen, setIsOverviewFormulaOpen] = useState(false)
 
   const [expandedMetric, setExpandedMetric] = useState<MetricId | null>(null)
+  const [expandedMode, setExpandedMode] = useState<'live' | 'historical' | null>(null)
   const [isMetricClosing, setIsMetricClosing] = useState(false)
   const [showExpandedAxes, setShowExpandedAxes] = useState(false)
-  const [expandedTimeframe, setExpandedTimeframe] = useState<Timeframe>('12h')
+  const [expandedTimeframe, setExpandedTimeframe] = useState<ExpandedTimeframe>('12h')
   const [expandedHoverIndex, setExpandedHoverIndex] = useState<number | null>(null)
 
   const [geminiOpen, setGeminiOpen] = useState(false)
@@ -404,9 +459,45 @@ function App() {
   useEffect(() => {
     const controller = new AbortController()
 
-    const loadMetrics = async () => {
+    const loadSnapshot = async () => {
       try {
-        const response = await fetch('/api/history/metrics', {
+        const response = await fetch(`/api/live/metrics?window=${SNAPSHOT_WINDOW}`, {
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          throw new Error('Failed to load live metrics.')
+        }
+
+        const payload = (await response.json()) as MetricsApiResponse
+        setSnapshotMetrics(payload.metrics)
+        setSnapshotError(null)
+      } catch (loadError) {
+        if (controller.signal.aborted) {
+          return
+        }
+
+        const message =
+          loadError instanceof Error ? loadError.message : 'Failed to load live metrics.'
+        setSnapshotError(message)
+      }
+    }
+
+    void loadSnapshot()
+    const intervalId = window.setInterval(loadSnapshot, LIVE_SNAPSHOT_POLL_MS)
+
+    return () => {
+      controller.abort()
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    const loadHistorical = async () => {
+      try {
+        const response = await fetch(`/api/history/metrics?window=${HISTORICAL_WINDOW}`, {
           signal: controller.signal,
         })
 
@@ -414,9 +505,9 @@ function App() {
           throw new Error('Failed to load historical metrics.')
         }
 
-        const payload = (await response.json()) as HistoryApiResponse
-        setHistoryMetrics(payload.metrics)
-        setHistoryError(null)
+        const payload = (await response.json()) as MetricsApiResponse
+        setHistoricalMetrics(payload.metrics)
+        setHistoricalError(null)
       } catch (loadError) {
         if (controller.signal.aborted) {
           return
@@ -426,14 +517,75 @@ function App() {
           loadError instanceof Error
             ? loadError.message
             : 'Failed to load historical metrics.'
-        setHistoryError(message)
+        setHistoricalError(message)
       }
     }
 
-    void loadMetrics()
+    void loadHistorical()
+    const intervalId = window.setInterval(loadHistorical, HISTORICAL_POLL_MS)
 
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      window.clearInterval(intervalId)
+    }
   }, [])
+
+  useEffect(() => {
+    if (!expandedMetric || !expandedMode) {
+      setExpandedMetrics(null)
+      setExpandedError(null)
+      return
+    }
+
+    const controller = new AbortController()
+
+    const loadExpanded = async () => {
+      try {
+        const endpoint =
+          expandedMode === 'live'
+            ? `/api/live/metrics?window=${expandedTimeframe}`
+            : `/api/history/metrics?window=${expandedTimeframe}`
+        const response = await fetch(endpoint, {
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          throw new Error(
+            expandedMode === 'live'
+              ? 'Failed to load live metric stream.'
+              : 'Failed to load historical metrics.',
+          )
+        }
+
+        const payload = (await response.json()) as MetricsApiResponse
+        setExpandedMetrics(payload.metrics)
+        setExpandedError(null)
+      } catch (loadError) {
+        if (controller.signal.aborted) {
+          return
+        }
+
+        const message =
+          loadError instanceof Error
+            ? loadError.message
+            : expandedMode === 'live'
+              ? 'Failed to load live metric stream.'
+              : 'Failed to load historical metrics.'
+        setExpandedError(message)
+      }
+    }
+
+    void loadExpanded()
+    const intervalId =
+      expandedMode === 'live' ? window.setInterval(loadExpanded, LIVE_MODAL_POLL_MS) : null
+
+    return () => {
+      controller.abort()
+      if (intervalId !== null) {
+        window.clearInterval(intervalId)
+      }
+    }
+  }, [expandedMetric, expandedMode, expandedTimeframe])
 
   useEffect(() => {
     if (!isMetricClosing) {
@@ -442,19 +594,26 @@ function App() {
 
     const timeoutId = window.setTimeout(() => {
       setExpandedMetric(null)
+      setExpandedMode(null)
       setIsMetricClosing(false)
     }, METRIC_MODAL_ANIMATION_MS)
 
     return () => window.clearTimeout(timeoutId)
   }, [isMetricClosing])
 
-  const openExpandedMetric = useCallback((metricId: MetricId) => {
-    setExpandedMetric(metricId)
-    setExpandedTimeframe('12h')
-    setExpandedHoverIndex(null)
-    setShowExpandedAxes(false)
-    setIsMetricClosing(false)
-  }, [])
+  const openExpandedMetric = useCallback(
+    (metricId: MetricId, mode: 'live' | 'historical') => {
+      setExpandedMetric(metricId)
+      setExpandedMode(mode)
+      setExpandedTimeframe(mode === 'historical' ? 'all' : '12h')
+      setExpandedHoverIndex(null)
+      setShowExpandedAxes(false)
+      setIsMetricClosing(false)
+      setExpandedMetrics(null)
+      setExpandedError(null)
+    },
+    [],
+  )
 
   const openOverviewModal = useCallback(() => {
     setIsOverviewModalOpen(true)
@@ -506,27 +665,27 @@ function App() {
 
   useEffect(() => {
     setExpandedHoverIndex(null)
-  }, [expandedMetric, expandedTimeframe])
+  }, [expandedMetric, expandedMode, expandedTimeframe])
 
   const latestObservationTime = useMemo(() => {
-    if (!historyMetrics) {
+    if (!snapshotMetrics) {
       return null
     }
 
-    const latest = historyMetrics.temperature.points.at(-1)
+    const latest = snapshotMetrics.temperature.points.at(-1)
     if (!latest) {
       return null
     }
 
     return formatTimestamp(latest.time)
-  }, [historyMetrics])
+  }, [snapshotMetrics])
 
   const weatherOverview = useMemo(() => {
-    const temp = historyMetrics?.temperature.latest ?? null
-    const humi = historyMetrics?.humidity.latest ?? null
-    const wind = historyMetrics?.wind.latest ?? null
+    const temp = historicalMetrics?.temperature.latest ?? null
+    const humi = historicalMetrics?.humidity.latest ?? null
+    const pres = historicalMetrics?.pressure.latest ?? null
 
-    if (temp === null || humi === null || wind === null) {
+    if (temp === null || humi === null || pres === null) {
       return {
         score: null as number | null,
         status: null as OverviewStatus | null,
@@ -538,26 +697,26 @@ function App() {
     const humidityComfort = clamp(100 - Math.abs(humi - 55) * 2, 0, 100)
     const comfortScore = 0.6 * temperatureComfort + 0.4 * humidityComfort
 
-    const windScore = clamp(100 - Math.abs(wind - 8) * 7, 0, 100)
+    const pressureScore = clamp(100 - Math.abs(pres - 1013) * 1.5, 0, 100)
 
     const tempStability = stabilityFromDelta(
-      averageDelta(historyMetrics?.temperature.points ?? [], 12),
+      averageDelta(historicalMetrics?.temperature.points ?? [], 12),
       0.35,
     )
     const humiStability = stabilityFromDelta(
-      averageDelta(historyMetrics?.humidity.points ?? [], 12),
+      averageDelta(historicalMetrics?.humidity.points ?? [], 12),
       1.2,
     )
-    const windStability = stabilityFromDelta(
-      averageDelta(historyMetrics?.wind.points ?? [], 12),
-      1.0,
+    const pressureStability = stabilityFromDelta(
+      averageDelta(historicalMetrics?.pressure.points ?? [], 12),
+      0.6,
     )
     const stabilityScore =
-      0.45 * tempStability + 0.35 * humiStability + 0.2 * windStability
+      0.45 * tempStability + 0.35 * humiStability + 0.2 * pressureStability
 
     const score = Math.round(
       clamp(
-        0.55 * comfortScore + 0.25 * windScore + 0.2 * stabilityScore,
+        0.55 * comfortScore + 0.25 * pressureScore + 0.2 * stabilityScore,
         0,
         100,
       ),
@@ -570,15 +729,16 @@ function App() {
       status,
       chipClass: `chip ${statusChipClass(status)}`,
     }
-  }, [historyMetrics])
+  }, [historicalMetrics])
 
   const quickMetrics = useMemo(() => {
-    const temperature = historyMetrics?.temperature ?? null
-    const humidity = historyMetrics?.humidity ?? null
-    const wind = historyMetrics?.wind ?? null
+    const temperature = snapshotMetrics?.temperature ?? null
+    const humidity = snapshotMetrics?.humidity ?? null
+    const pressure = snapshotMetrics?.pressure ?? null
 
     return [
       {
+        metricId: 'temperature' as const,
         label: 'Temperature',
         value: formatMetricValue('temperature', temperature?.latest ?? null),
         unit: temperature?.unit ?? metricStyleConfig.temperature.fallbackUnit,
@@ -588,6 +748,7 @@ function App() {
         bar: normalizeMeterValue(temperature),
       },
       {
+        metricId: 'humidity' as const,
         label: 'Humidity',
         value: formatMetricValue('humidity', humidity?.latest ?? null),
         unit: humidity?.unit ?? metricStyleConfig.humidity.fallbackUnit,
@@ -597,42 +758,43 @@ function App() {
         bar: normalizeMeterValue(humidity),
       },
       {
-        label: 'Wind',
-        value: formatMetricValue('wind', wind?.latest ?? null),
-        unit: wind?.unit ?? metricStyleConfig.wind.fallbackUnit,
-        delta: formatMetricDelta('wind', wind?.delta ?? null),
-        note: metricNote('wind', wind?.latest ?? null),
-        accent: metricStyleConfig.wind.accent,
-        bar: normalizeMeterValue(wind),
+        metricId: 'pressure' as const,
+        label: 'Pressure',
+        value: formatMetricValue('pressure', pressure?.latest ?? null),
+        unit: pressure?.unit ?? metricStyleConfig.pressure.fallbackUnit,
+        delta: formatMetricDelta('pressure', pressure?.delta ?? null),
+        note: metricNote('pressure', pressure?.latest ?? null),
+        accent: metricStyleConfig.pressure.accent,
+        bar: normalizeMeterValue(pressure),
       },
     ]
-  }, [historyMetrics])
+  }, [snapshotMetrics])
 
   const overviewReadings = useMemo(
     () => [
       {
         label: 'Temperature',
-        value: formatMetricValue('temperature', historyMetrics?.temperature.latest ?? null),
+        value: formatMetricValue('temperature', historicalMetrics?.temperature.latest ?? null),
         unit: metricStyleConfig.temperature.fallbackUnit,
       },
       {
         label: 'Humidity',
-        value: formatMetricValue('humidity', historyMetrics?.humidity.latest ?? null),
+        value: formatMetricValue('humidity', historicalMetrics?.humidity.latest ?? null),
         unit: metricStyleConfig.humidity.fallbackUnit,
       },
       {
-        label: 'Wind',
-        value: formatMetricValue('wind', historyMetrics?.wind.latest ?? null),
-        unit: metricStyleConfig.wind.fallbackUnit,
+        label: 'Pressure',
+        value: formatMetricValue('pressure', historicalMetrics?.pressure.latest ?? null),
+        unit: metricStyleConfig.pressure.fallbackUnit,
       },
     ],
-    [historyMetrics],
+    [historicalMetrics],
   )
 
   const trendCards = useMemo(() => {
     return metricOrder.map((metricId) => {
-      const metric = historyMetrics?.[metricId] ?? null
-      const points = metric ? filterByTimeframe(metric.points, '12h') : []
+      const metric = historicalMetrics?.[metricId] ?? null
+      const points = metric ? metric.points : []
       const previewPoints = resamplePoints(points, 64)
       const geometry = buildChartGeometry(previewPoints, 200, 80, 4)
 
@@ -645,25 +807,41 @@ function App() {
           metricId,
           points,
           metric?.unit ?? metricStyleConfig[metricId].fallbackUnit,
+          'historical',
         ),
         accent: metricStyleConfig[metricId].accent,
         geometry,
       }
     })
-  }, [historyMetrics])
+  }, [historicalMetrics])
 
-  const windNow = historyMetrics?.wind.latest ?? null
+  const pressureNow = historicalMetrics?.pressure.latest ?? null
   const gaugeNeedleStyle: CSSProperties = useMemo(() => {
-    if (windNow === null || Number.isNaN(windNow)) {
+    if (pressureNow === null || Number.isNaN(pressureNow)) {
       return { '--needle-rotation': '0deg' } as CSSProperties
     }
 
-    const normalized = Math.max(0, Math.min(1, windNow / 35))
+    const normalized = Math.max(
+      0,
+      Math.min(1, (pressureNow - PRESSURE_GAUGE_MIN) / (PRESSURE_GAUGE_MAX - PRESSURE_GAUGE_MIN)),
+    )
     const rotation = -80 + normalized * 160
     return { '--needle-rotation': `${rotation}deg` } as CSSProperties
-  }, [windNow])
+  }, [pressureNow])
 
-  const expandedMetricData = expandedMetric ? historyMetrics?.[expandedMetric] ?? null : null
+  const expandedFallbackMetrics =
+    expandedMode === 'historical' ? historicalMetrics : snapshotMetrics
+  const expandedMetricData = expandedMetric
+    ? expandedMetrics?.[expandedMetric] ?? expandedFallbackMetrics?.[expandedMetric] ?? null
+    : null
+  const expandedMetricKey: MetricId =
+    expandedMetricData?.key ?? expandedMetric ?? 'temperature'
+  const expandedMetricLabel =
+    expandedMetricData?.label ?? metricStyleConfig[expandedMetricKey].defaultLabel
+  const expandedMetricUnit =
+    expandedMetricData?.unit ?? metricStyleConfig[expandedMetricKey].fallbackUnit
+  const activeTimeframeOptions =
+    expandedMode === 'live' ? liveTimeframeOptions : historicalTimeframeOptions
 
   const expandedPoints = useMemo(() => {
     if (!expandedMetricData) {
@@ -691,6 +869,8 @@ function App() {
       ),
     [expandedDisplayPoints, showExpandedAxes],
   )
+  const expandedMin = expandedGeometry?.min ?? null
+  const expandedMax = expandedGeometry?.max ?? null
 
   const expandedYAxisTicks = useMemo(() => {
     if (!expandedGeometry) {
@@ -801,7 +981,7 @@ function App() {
             <p className="eyebrow">Weather Station</p>
             <h1>Nanyang Polytechnic - Ang Mo Kio</h1>
             <p className="subtle">
-              Historical sync {latestObservationTime ? `- ${latestObservationTime}` : '- Loading...'}
+              Live sync {latestObservationTime ? `- ${latestObservationTime}` : '- Loading...'}
             </p>
           </div>
         </div>
@@ -817,7 +997,8 @@ function App() {
         </div>
       </header>
 
-      {historyError && <div className="history-error">{historyError}</div>}
+      {snapshotError && <div className="history-error">{snapshotError}</div>}
+      {historicalError && <div className="history-error">{historicalError}</div>}
 
       <main className="dashboard-grid">
         <button
@@ -859,10 +1040,13 @@ function App() {
           </div>
           <div className="metrics-grid">
             {quickMetrics.map((metric) => (
-              <div
-                className="mini-card"
+              <button
+                type="button"
+                className="mini-card mini-card-button"
                 key={metric.label}
                 style={accentStyle(metric.accent)}
+                onClick={() => openExpandedMetric(metric.metricId, 'live')}
+                aria-label={`Open live ${metric.label.toLowerCase()} chart`}
               >
                 <div className="mini-top">
                   <span className="mini-label">{metric.label}</span>
@@ -881,7 +1065,7 @@ function App() {
                 <div className="mini-meter" style={meterStyle(metric.bar)}>
                   <span />
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </section>
@@ -889,11 +1073,11 @@ function App() {
         <section className="card gauge-card">
           <div className="card-header">
             <div>
-              <p className="eyebrow">Wind Focus</p>
-              <h2>Wind Intensity</h2>
+              <p className="eyebrow">Pressure Focus</p>
+              <h2>Pressure Level</h2>
             </div>
             <span className="chip chip-warn">
-              {metricNote('wind', historyMetrics?.wind.latest ?? null)}
+              {metricNote('pressure', historicalMetrics?.pressure.latest ?? null)}
             </span>
           </div>
           <div className="gauge-wrap">
@@ -921,22 +1105,27 @@ function App() {
             </div>
             <div className="gauge-readout">
               <span className="gauge-value">
-                {formatMetricValue('wind', historyMetrics?.wind.latest ?? null)}
+                {formatMetricValue('pressure', historicalMetrics?.pressure.latest ?? null)}
               </span>
-              <span className="gauge-unit">km/h</span>
+              <span className="gauge-unit">hPa</span>
               <span className="gauge-sub">
-                {historyMetrics?.wind.max !== null &&
-                historyMetrics?.wind.max !== undefined
-                  ? `Peak ${historyMetrics.wind.max.toFixed(1)} km/h`
-                  : 'Historical wind unavailable'}
+                {historicalMetrics?.pressure.max !== null &&
+                historicalMetrics?.pressure.max !== undefined
+                  ? `Peak ${historicalMetrics.pressure.max.toFixed(1)} hPa`
+                  : 'Pressure trend unavailable'}
               </span>
             </div>
             <div className="gauge-scale">
-              <span>Calm</span>
-              <span>Strong</span>
+              <span>Low</span>
+              <span>High</span>
             </div>
           </div>
         </section>
+
+        <div className="section-header">
+          <p className="eyebrow">Historical Data</p>
+          <div className="section-line" aria-hidden="true" />
+        </div>
 
         {trendCards.map((metric, index) => (
           <button
@@ -944,11 +1133,11 @@ function App() {
             className="card trend-card trend-card-button"
             key={metric.metricId}
             style={accentStyle(metric.accent)}
-            onClick={() => openExpandedMetric(metric.metricId)}
+            onClick={() => openExpandedMetric(metric.metricId, 'historical')}
           >
             <div className="trend-header">
               <div>
-                <p className="eyebrow">Last 12h</p>
+                <p className="eyebrow">All time</p>
                 <h3>{metric.label}</h3>
               </div>
               <div className="trend-value">
@@ -994,7 +1183,7 @@ function App() {
       <footer className="dashboard-footer">
         <div className="footer-left">
           <span className="footer-dot" />
-          Historical metrics powered by backend CSV API
+          Live metrics powered by sensor_data. Historical metrics powered by historical_data.
         </div>
         <div className="footer-right">Weather Station UI</div>
       </footer>
@@ -1038,11 +1227,11 @@ function App() {
             {isOverviewFormulaOpen && (
               <div className="overview-formula">
                 <p>
-                  Formula: <strong>0.55 * Comfort + 0.25 * Wind + 0.20 * Stability</strong>
+                  Formula: <strong>0.55 * Comfort + 0.25 * Pressure + 0.20 * Stability</strong>
                 </p>
                 <p>
                   Comfort combines temperature and humidity around target
-                  conditions, wind rewards moderate airflow, and stability
+                  conditions, pressure rewards steady conditions, and stability
                   rewards smoother recent changes.
                 </p>
               </div>
@@ -1078,7 +1267,7 @@ function App() {
         </div>
       )}
 
-      {expandedMetricData && expandedGeometry && (
+      {expandedMetric && (
         <div
           className={`metric-modal ${isMetricClosing ? 'closing' : ''}`}
           role="dialog"
@@ -1092,23 +1281,26 @@ function App() {
           />
           <section
             className="metric-modal-panel"
-            style={accentStyle(metricStyleConfig[expandedMetricData.key].accent)}
+            style={accentStyle(metricStyleConfig[expandedMetricKey].accent)}
           >
             <div className="metric-modal-header">
               <div>
-                <p className="eyebrow">Historical Metric</p>
-                <h3>{expandedMetricData.label}</h3>
+                <p className="eyebrow">
+                  {expandedMode === 'live' ? 'Live Metric' : 'Historical Metric'}
+                </p>
+                <h3>{expandedMetricLabel}</h3>
                 <p className="metric-modal-subtitle">
                   {rangeLabel(
-                    expandedMetricData.key,
+                    expandedMetricKey,
                     expandedPoints,
-                    expandedMetricData.unit,
+                    expandedMetricUnit,
+                    expandedMode === 'live' ? 'live' : 'historical',
                   )}
                 </p>
               </div>
               <div className="metric-modal-actions">
                 <div className="timeframe-group" role="tablist" aria-label="Timeframe selector">
-                  {timeframeOptions.map((option) => (
+                  {activeTimeframeOptions.map((option) => (
                     <button
                       key={option.value}
                       type="button"
@@ -1140,167 +1332,183 @@ function App() {
             </div>
 
             <div className="metric-modal-value">
-              {formatMetricValue(expandedMetricData.key, expandedMetricData.latest)}{' '}
-              <span>{expandedMetricData.unit}</span>
+              {formatMetricValue(expandedMetricKey, expandedMetricData?.latest ?? null)}{' '}
+              <span>{expandedMetricUnit}</span>
             </div>
 
             <div className="expanded-chart-wrap">
-              <svg
-                className="expanded-sparkline"
-                viewBox={`0 0 ${expandedGeometry.width} ${expandedGeometry.height}`}
-                role="img"
-                aria-label={`${expandedMetricData.label} historical graph`}
-                onMouseMove={handleExpandedChartMove}
-                onMouseLeave={() => setExpandedHoverIndex(null)}
-              >
-                <defs>
-                  <linearGradient
-                    id="spark-expanded"
-                    x1="0%"
-                    y1="0%"
-                    x2="100%"
-                    y2="0%"
+              {expandedGeometry ? (
+                <>
+                  <svg
+                    className="expanded-sparkline"
+                    viewBox={`0 0 ${expandedGeometry.width} ${expandedGeometry.height}`}
+                    role="img"
+                    aria-label={`${expandedMetricLabel} ${
+                      expandedMode === 'live' ? 'live' : 'historical'
+                    } graph`}
+                    onMouseMove={handleExpandedChartMove}
+                    onMouseLeave={() => setExpandedHoverIndex(null)}
                   >
-                    <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.2" />
-                    <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.72" />
-                  </linearGradient>
-                </defs>
-                <path
-                  className="sparkline-area"
-                  d={expandedGeometry.areaPath}
-                  fill="url(#spark-expanded)"
-                />
-                {showExpandedAxes && (
-                  <>
-                    <line
-                      className="chart-axis"
-                      x1={expandedGeometry.padding}
-                      y1={expandedGeometry.height - expandedGeometry.padding}
-                      x2={expandedGeometry.width - expandedGeometry.padding}
-                      y2={expandedGeometry.height - expandedGeometry.padding}
+                    <defs>
+                      <linearGradient
+                        id="spark-expanded"
+                        x1="0%"
+                        y1="0%"
+                        x2="100%"
+                        y2="0%"
+                      >
+                        <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.2" />
+                        <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.72" />
+                      </linearGradient>
+                    </defs>
+                    <path
+                      className="sparkline-area"
+                      d={expandedGeometry.areaPath}
+                      fill="url(#spark-expanded)"
                     />
-                    <line
-                      className="chart-axis"
-                      x1={expandedGeometry.padding}
-                      y1={expandedGeometry.padding}
-                      x2={expandedGeometry.padding}
-                      y2={expandedGeometry.height - expandedGeometry.padding}
-                    />
-                    {expandedYAxisTicks.map((tick) => (
-                      <g key={tick.key}>
+                    {showExpandedAxes && (
+                      <>
                         <line
-                          className="chart-grid-line"
+                          className="chart-axis"
                           x1={expandedGeometry.padding}
-                          y1={tick.y}
+                          y1={expandedGeometry.height - expandedGeometry.padding}
                           x2={expandedGeometry.width - expandedGeometry.padding}
-                          y2={tick.y}
+                          y2={expandedGeometry.height - expandedGeometry.padding}
                         />
                         <line
                           className="chart-axis"
-                          x1={expandedGeometry.padding - 6}
-                          y1={tick.y}
+                          x1={expandedGeometry.padding}
+                          y1={expandedGeometry.padding}
                           x2={expandedGeometry.padding}
-                          y2={tick.y}
+                          y2={expandedGeometry.height - expandedGeometry.padding}
                         />
+                        {expandedYAxisTicks.map((tick) => (
+                          <g key={tick.key}>
+                            <line
+                              className="chart-grid-line"
+                              x1={expandedGeometry.padding}
+                              y1={tick.y}
+                              x2={expandedGeometry.width - expandedGeometry.padding}
+                              y2={tick.y}
+                            />
+                            <line
+                              className="chart-axis"
+                              x1={expandedGeometry.padding - 6}
+                              y1={tick.y}
+                              x2={expandedGeometry.padding}
+                              y2={tick.y}
+                            />
+                            <text
+                              className="chart-axis-tick"
+                              x={expandedGeometry.padding - 10}
+                              y={tick.y + 4}
+                              textAnchor="end"
+                            >
+                              {formatMetricValue(expandedMetricKey, tick.value)}
+                            </text>
+                          </g>
+                        ))}
+                        {expandedFirstPoint && (
+                          <text
+                            className="chart-axis-tick"
+                            x={expandedGeometry.padding}
+                            y={expandedGeometry.height - expandedGeometry.padding + 24}
+                            textAnchor="start"
+                          >
+                            {formatAxisTime(expandedFirstPoint.time)}
+                          </text>
+                        )}
+                        {expandedLastPoint && (
+                          <text
+                            className="chart-axis-tick"
+                            x={expandedGeometry.width - expandedGeometry.padding}
+                            y={expandedGeometry.height - expandedGeometry.padding + 24}
+                            textAnchor="end"
+                          >
+                            {formatAxisTime(expandedLastPoint.time)}
+                          </text>
+                        )}
                         <text
-                          className="chart-axis-tick"
-                          x={expandedGeometry.padding - 10}
-                          y={tick.y + 4}
-                          textAnchor="end"
+                          className="chart-axis-label"
+                          x={expandedGeometry.width / 2}
+                          y={expandedGeometry.height - 10}
+                          textAnchor="middle"
                         >
-                          {formatMetricValue(expandedMetricData.key, tick.value)}
+                          Time
                         </text>
-                      </g>
-                    ))}
-                    {expandedFirstPoint && (
-                      <text
-                        className="chart-axis-tick"
-                        x={expandedGeometry.padding}
-                        y={expandedGeometry.height - expandedGeometry.padding + 24}
-                        textAnchor="start"
-                      >
-                        {formatAxisTime(expandedFirstPoint.time)}
-                      </text>
+                        <text
+                          className="chart-axis-label"
+                          x={22}
+                          y={expandedGeometry.height / 2}
+                          textAnchor="middle"
+                          transform={`rotate(-90 22 ${expandedGeometry.height / 2})`}
+                        >
+                          {expandedMetricLabel} ({expandedMetricUnit})
+                        </text>
+                      </>
                     )}
-                    {expandedLastPoint && (
-                      <text
-                        className="chart-axis-tick"
-                        x={expandedGeometry.width - expandedGeometry.padding}
-                        y={expandedGeometry.height - expandedGeometry.padding + 24}
-                        textAnchor="end"
-                      >
-                        {formatAxisTime(expandedLastPoint.time)}
-                      </text>
-                    )}
-                    <text
-                      className="chart-axis-label"
-                      x={expandedGeometry.width / 2}
-                      y={expandedGeometry.height - 10}
-                      textAnchor="middle"
-                    >
-                      Time
-                    </text>
-                    <text
-                      className="chart-axis-label"
-                      x={22}
-                      y={expandedGeometry.height / 2}
-                      textAnchor="middle"
-                      transform={`rotate(-90 22 ${expandedGeometry.height / 2})`}
-                    >
-                      {expandedMetricData.label} ({expandedMetricData.unit})
-                    </text>
-                  </>
-                )}
-                <path className="sparkline-line" d={expandedGeometry.linePath} />
-                <circle
-                  className="sparkline-dot"
-                  cx={expandedGeometry.dot.x}
-                  cy={expandedGeometry.dot.y}
-                  r="5"
-                />
-                {expandedHoverPoint && (
-                  <>
-                    <line
-                      className="sparkline-crosshair"
-                      x1={expandedHoverPoint.x}
-                      y1={expandedGeometry.padding}
-                      x2={expandedHoverPoint.x}
-                      y2={expandedGeometry.height - expandedGeometry.padding}
-                    />
+                    <path className="sparkline-line" d={expandedGeometry.linePath} />
                     <circle
-                      className="sparkline-hover-dot"
-                      cx={expandedHoverPoint.x}
-                      cy={expandedHoverPoint.y}
-                      r="6"
+                      className={`sparkline-dot${expandedMode === 'live' ? ' live-dot' : ''}`}
+                      cx={expandedGeometry.dot.x}
+                      cy={expandedGeometry.dot.y}
+                      r="5"
                     />
-                  </>
-                )}
-              </svg>
+                    {expandedHoverPoint && (
+                      <>
+                        <line
+                          className="sparkline-crosshair"
+                          x1={expandedHoverPoint.x}
+                          y1={expandedGeometry.padding}
+                          x2={expandedHoverPoint.x}
+                          y2={expandedGeometry.height - expandedGeometry.padding}
+                        />
+                        <circle
+                          className="sparkline-hover-dot"
+                          cx={expandedHoverPoint.x}
+                          cy={expandedHoverPoint.y}
+                          r="6"
+                        />
+                      </>
+                    )}
+                  </svg>
 
-              {expandedHoverPoint && expandedTooltipStyle && (
-                <div className="chart-tooltip" style={expandedTooltipStyle}>
-                  <span>{formatTimestamp(expandedHoverPoint.time)}</span>
-                  <strong>
-                    {formatMetricValue(expandedMetricData.key, expandedHoverPoint.value)}{' '}
-                    {expandedMetricData.unit}
-                  </strong>
+                  {expandedHoverPoint && expandedTooltipStyle && (
+                    <div className="chart-tooltip" style={expandedTooltipStyle}>
+                      <span>{formatTimestamp(expandedHoverPoint.time)}</span>
+                      <strong>
+                        {formatMetricValue(expandedMetricKey, expandedHoverPoint.value)}{' '}
+                        {expandedMetricUnit}
+                      </strong>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="expanded-chart-empty">
+                  {expandedError
+                    ? expandedError
+                    : expandedMetricData
+                      ? `No ${expandedMode === 'live' ? 'live' : 'historical'} data in this timeframe.`
+                      : `Loading ${expandedMode === 'live' ? 'live' : 'historical'} data...`}
                 </div>
               )}
             </div>
+
+            {expandedError && expandedGeometry && (
+              <div className="expanded-error">{expandedError}</div>
+            )}
 
             <div className="expanded-stats">
               <div>
                 <span>Min</span>
                 <strong>
-                  {formatMetricValue(expandedMetricData.key, expandedGeometry.min)}{' '}
-                  {expandedMetricData.unit}
+                  {formatMetricValue(expandedMetricKey, expandedMin)} {expandedMetricUnit}
                 </strong>
               </div>
               <div>
                 <span>Max</span>
                 <strong>
-                  {formatMetricValue(expandedMetricData.key, expandedGeometry.max)}{' '}
-                  {expandedMetricData.unit}
+                  {formatMetricValue(expandedMetricKey, expandedMax)} {expandedMetricUnit}
                 </strong>
               </div>
               <div>

@@ -13,11 +13,13 @@
     "cors": "latest",
     "dotenv": "latest",
     "express": "latest",
-    "mime": "latest"
+    "mime": "latest",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/express": "latest",
     "@types/node": "latest",
+    "@types/pg": "^8.11.10",
     "tsx": "latest",
     "typescript": "latest"
   }
