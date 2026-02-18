@@ -963,6 +963,30 @@
   cursor: not-allowed;
 }
 
+.prediction-focus-toggle {
+  border: 1px solid rgba(120, 150, 180, 0.24);
+  background: rgba(10, 16, 24, 0.8);
+  color: var(--text);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.prediction-focus-toggle.active {
+  border-color: color-mix(in srgb, var(--accent) 56%, white 18%);
+  background: color-mix(in srgb, var(--accent) 24%, #0d1620 76%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent 66%);
+}
+
+.prediction-focus-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .metric-close {
   border: 1px solid rgba(120, 150, 180, 0.24);
   background: rgba(10, 16, 24, 0.8);
@@ -1144,6 +1168,13 @@
   background: rgba(7, 12, 20, 0.75);
   padding: 12px;
   overflow: hidden;
+  transition: border-color 0.24s ease, box-shadow 0.24s ease, background-color 0.24s ease;
+}
+
+.expanded-chart-wrap.prediction-focus-active {
+  border-color: color-mix(in srgb, var(--accent) 48%, rgba(120, 150, 180, 0.35) 52%);
+  background: rgba(7, 12, 20, 0.84);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent 78%);
 }
 
 .forecast-loading-overlay {
@@ -1173,6 +1204,15 @@
   width: 100%;
   height: 100%;
   min-height: 300px;
+}
+
+.expanded-sparkline.forecast-chart-enter {
+  animation: forecast-chart-enter 300ms ease both;
+  transform-origin: 50% 55%;
+}
+
+.expanded-sparkline.prediction-only {
+  animation: forecast-chart-enter 280ms ease both, prediction-focus-pop 340ms ease both;
 }
 
 .expanded-chart-empty {
@@ -1211,12 +1251,26 @@
   stroke-width: 2.7;
 }
 
+.sparkline-prediction-line.prediction-focus-line {
+  stroke-width: 3.1;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 54%, transparent 46%));
+}
+
 .forecast-fade-in {
   animation: forecast-line-enter 280ms ease;
 }
 
 .sparkline-prediction-dot {
   fill: color-mix(in srgb, var(--accent) 75%, white 18%);
+}
+
+.forecast-table-hover-point {
+  fill: color-mix(in srgb, var(--accent) 84%, white 10%);
+  stroke: rgba(8, 12, 18, 0.95);
+  stroke-width: 2.4;
+  opacity: 0.96;
+  pointer-events: none;
+  animation: forecast-point-pop 170ms ease;
 }
 
 .chart-axis {
@@ -1291,6 +1345,70 @@
 
 .expanded-stats strong {
   font-size: 0.97rem;
+}
+
+.forecast-insights-panel {
+  border: 1px solid rgba(120, 150, 180, 0.2);
+  background: rgba(10, 16, 24, 0.72);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.forecast-insights-header h4 {
+  margin: 0;
+  font-size: 0.97rem;
+}
+
+.forecast-insights-period {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.forecast-insights-table-wrap {
+  overflow-x: auto;
+}
+
+.forecast-insights-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.83rem;
+}
+
+.forecast-insights-table th,
+.forecast-insights-table td {
+  border: 1px solid rgba(120, 150, 180, 0.18);
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.forecast-insights-table th {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+  background: rgba(8, 12, 18, 0.8);
+}
+
+.forecast-insights-table tr:nth-child(even) td {
+  background: rgba(8, 12, 18, 0.55);
+}
+
+.forecast-insights-table tbody tr td {
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.forecast-insights-table tbody tr:hover td,
+.forecast-insights-table tbody tr.is-hovered td {
+  background: color-mix(in srgb, var(--accent) 14%, rgba(9, 14, 22, 0.92));
+  border-color: color-mix(in srgb, var(--accent) 40%, rgba(120, 150, 180, 0.22));
+}
+
+.forecast-table-transition {
+  animation: forecast-table-enter 200ms ease both;
 }
 
 .footer-left {
@@ -1606,6 +1724,48 @@
   }
 }
 
+@keyframes forecast-chart-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes prediction-focus-pop {
+  from {
+    transform: scale(1.015);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes forecast-point-pop {
+  from {
+    transform: scale(0.82);
+    opacity: 0.6;
+  }
+  to {
+    transform: scale(1);
+    opacity: 0.96;
+  }
+}
+
+@keyframes forecast-table-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes forecast-sweep {
   from {
     background-position: 0% 50%;
@@ -1778,7 +1938,10 @@
 @media (prefers-reduced-motion: reduce) {
   .card,
   .status-dot,
-  .summary-ring::before {
+  .summary-ring::before,
+  .expanded-sparkline,
+  .forecast-table-transition,
+  .forecast-table-hover-point {
     animation: none;
   }
 }

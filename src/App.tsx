@@ -453,6 +453,19 @@ const formatAxisTime = (iso: string) =>
     minute: '2-digit',
   })
 
+const formatForecastDay = (iso: string) =>
+  new Date(iso).toLocaleDateString([], {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  })
+
+const formatForecastHour = (iso: string) =>
+  new Date(iso).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value))
 
@@ -535,6 +548,9 @@ function App() {
   const [isForecastLoading, setIsForecastLoading] = useState(false)
   const [expandedForecastError, setExpandedForecastError] = useState<string | null>(null)
   const [expandedHoverIndex, setExpandedHoverIndex] = useState<number | null>(null)
+  const [isPredictionFocusActive, setIsPredictionFocusActive] = useState(false)
+  const [hoveredForecastPointIndexes, setHoveredForecastPointIndexes] = useState<number[]>([])
+  const [hoveredForecastRowKey, setHoveredForecastRowKey] = useState<string | null>(null)
   const [historicalGeminiOpen, setHistoricalGeminiOpen] = useState(false)
   const [historicalGeminiText, setHistoricalGeminiText] = useState('')
   const [historicalGeminiError, setHistoricalGeminiError] = useState<string | null>(null)
@@ -769,6 +785,9 @@ function App() {
       setExpandedForecastMetrics(null)
       setExpandedForecastError(null)
       setExpandedHoverIndex(null)
+      setIsPredictionFocusActive(false)
+      setHoveredForecastPointIndexes([])
+      setHoveredForecastRowKey(null)
       setHistoricalGeminiOpen(false)
       setHistoricalGeminiText('')
       setHistoricalGeminiError(null)
@@ -836,6 +855,8 @@ function App() {
 
   useEffect(() => {
     setExpandedHoverIndex(null)
+    setHoveredForecastPointIndexes([])
+    setHoveredForecastRowKey(null)
   }, [expandedMetric, expandedMode, expandedTimeframe, expandedForecastMode])
 
   const stopHistoricalGeminiStream = useCallback(() => {
@@ -1040,6 +1061,16 @@ function App() {
     expandedMode === 'live' ? liveTimeframeOptions : historicalTimeframeOptions
   const isTimeframeLockedByForecast = isHistoricalForecastActive
 
+  useEffect(() => {
+    if (isHistoricalForecastActive) {
+      return
+    }
+
+    setIsPredictionFocusActive(false)
+    setHoveredForecastPointIndexes([])
+    setHoveredForecastRowKey(null)
+  }, [isHistoricalForecastActive])
+
   const expandedPoints = useMemo(() => {
     if (isHistoricalForecastActive) {
       if (expandedForecastMetricData) {
@@ -1079,17 +1110,27 @@ function App() {
     [expandedPoints, isHistoricalForecastActive],
   )
   const expandedPredictionDisplayPoints = useMemo(
-    () =>
-      isHistoricalForecastActive
-        ? resamplePoints(expandedPredictionPoints, 220)
-        : [],
+    () => (isHistoricalForecastActive ? expandedPredictionPoints : []),
     [expandedPredictionPoints, isHistoricalForecastActive],
   )
+  const isPredictionFocusChartActive =
+    isHistoricalForecastActive &&
+    isPredictionFocusActive &&
+    expandedPredictionDisplayPoints.length > 0
   const expandedDisplayPoints = useMemo(
-    () => [...expandedHistoricalDisplayPoints, ...expandedPredictionDisplayPoints],
-    [expandedHistoricalDisplayPoints, expandedPredictionDisplayPoints],
+    () =>
+      isPredictionFocusChartActive
+        ? expandedPredictionDisplayPoints
+        : [...expandedHistoricalDisplayPoints, ...expandedPredictionDisplayPoints],
+    [
+      expandedHistoricalDisplayPoints,
+      expandedPredictionDisplayPoints,
+      isPredictionFocusChartActive,
+    ],
   )
-  const predictionDisplayStartIndex = expandedHistoricalDisplayPoints.length
+  const predictionDisplayStartIndex = isPredictionFocusChartActive
+    ? 0
+    : expandedHistoricalDisplayPoints.length
   const expandedFirstPoint = expandedDisplayPoints[0]
   const expandedLastPoint = expandedDisplayPoints[expandedDisplayPoints.length - 1]
 
@@ -1126,6 +1167,10 @@ function App() {
       return expandedGeometry.linePath
     }
 
+    if (isPredictionFocusChartActive) {
+      return ''
+    }
+
     return buildLinePathFromChartPoints(
       expandedGeometry.points.slice(0, predictionDisplayStartIndex),
     )
@@ -1133,11 +1178,20 @@ function App() {
     expandedGeometry,
     expandedPredictionDisplayPoints.length,
     isHistoricalForecastActive,
+    isPredictionFocusChartActive,
     predictionDisplayStartIndex,
   ])
   const expandedPredictionPath = useMemo(() => {
-    if (!expandedGeometry || !isHistoricalForecastActive || expandedPredictionDisplayPoints.length === 0) {
+    if (
+      !expandedGeometry ||
+      !isHistoricalForecastActive ||
+      expandedPredictionDisplayPoints.length === 0
+    ) {
       return ''
+    }
+
+    if (isPredictionFocusChartActive) {
+      return expandedGeometry.linePath
     }
 
     const startIndex = predictionDisplayStartIndex > 0 ? predictionDisplayStartIndex - 1 : 0
@@ -1146,10 +1200,13 @@ function App() {
     expandedGeometry,
     expandedPredictionDisplayPoints.length,
     isHistoricalForecastActive,
+    isPredictionFocusChartActive,
     predictionDisplayStartIndex,
   ])
   const expandedHistoricalDot =
-    expandedGeometry && predictionDisplayStartIndex > 0
+    isPredictionFocusChartActive
+      ? null
+      : expandedGeometry && predictionDisplayStartIndex > 0
       ? expandedGeometry.points[predictionDisplayStartIndex - 1]
       : expandedGeometry?.dot
   const expandedPredictionDot =
@@ -1168,11 +1225,112 @@ function App() {
 
     return `${expandedForecastMode}-${expandedPredictionDisplayPoints.length}-${first}-${last}`
   }, [expandedForecastMode, expandedPredictionDisplayPoints])
+  const chartAnimationKey = useMemo(() => {
+    if (!isHistoricalForecastActive) {
+      return 'base'
+    }
+
+    const first = expandedDisplayPoints[0]?.time ?? 'start'
+    const last = expandedDisplayPoints[expandedDisplayPoints.length - 1]?.time ?? 'end'
+    return `${expandedForecastMode}-${isPredictionFocusChartActive ? 'focus' : 'full'}-${expandedDisplayPoints.length}-${first}-${last}`
+  }, [
+    expandedDisplayPoints,
+    expandedForecastMode,
+    isHistoricalForecastActive,
+    isPredictionFocusChartActive,
+  ])
   const expandedMin = expandedGeometry?.min ?? null
   const expandedMax = expandedGeometry?.max ?? null
   const expandedPointCount = isHistoricalForecastActive
     ? expandedPoints.length + expandedPredictionPoints.length
     : expandedPoints.length
+  const forecastPeriodLabel = useMemo(() => {
+    if (!isHistoricalForecastActive || expandedPredictionPoints.length === 0) {
+      return null
+    }
+
+    const first = expandedPredictionPoints[0]
+    const last = expandedPredictionPoints[expandedPredictionPoints.length - 1]
+    if (!first || !last) {
+      return null
+    }
+
+    if (expandedForecastMode === 'weekly') {
+      const firstDay = formatForecastDay(first.time)
+      const lastDay = formatForecastDay(last.time)
+      return firstDay === lastDay ? firstDay : `${firstDay} to ${lastDay}`
+    }
+
+    return `${formatAxisTime(first.time)} to ${formatAxisTime(last.time)}`
+  }, [expandedForecastMode, expandedPredictionPoints, isHistoricalForecastActive])
+  const weeklyForecastRows = useMemo(() => {
+    if (!isHistoricalForecastActive || expandedForecastMode !== 'weekly') {
+      return [] as Array<{
+        dayKey: string
+        day: string
+        average: number
+        min: number
+        max: number
+        pointIndexes: number[]
+      }>
+    }
+
+    const dailyBuckets = new Map<
+      string,
+      { dayKey: string; day: string; values: number[]; pointIndexes: number[] }
+    >()
+
+    for (const [pointIndex, point] of expandedPredictionPoints.entries()) {
+      const timestamp = new Date(point.time)
+      if (Number.isNaN(timestamp.getTime())) {
+        continue
+      }
+
+      const key = timestamp.toISOString().slice(0, 10)
+      const bucket = dailyBuckets.get(key)
+      if (bucket) {
+        bucket.values.push(point.value)
+        bucket.pointIndexes.push(pointIndex)
+      } else {
+        dailyBuckets.set(key, {
+          dayKey: key,
+          day: formatForecastDay(point.time),
+          values: [point.value],
+          pointIndexes: [pointIndex],
+        })
+      }
+    }
+
+    return Array.from(dailyBuckets.values())
+      .map((bucket) => {
+        const min = Math.min(...bucket.values)
+        const max = Math.max(...bucket.values)
+        const sum = bucket.values.reduce((total, value) => total + value, 0)
+        const average = bucket.values.length > 0 ? sum / bucket.values.length : 0
+
+        return {
+          dayKey: bucket.dayKey,
+          day: bucket.day,
+          average,
+          min,
+          max,
+          pointIndexes: bucket.pointIndexes,
+        }
+      })
+      .slice(0, 7)
+  }, [expandedForecastMode, expandedPredictionPoints, isHistoricalForecastActive])
+  const hourlyForecastRows = useMemo(() => {
+    if (!isHistoricalForecastActive || expandedForecastMode !== 'hourly') {
+      return [] as Array<{ key: string; time: string; value: number; pointIndexes: number[] }>
+    }
+
+    return expandedPredictionPoints.map((point, pointIndex) => ({
+      key: `${point.time}-${pointIndex}`,
+      time: formatForecastHour(point.time),
+      value: point.value,
+      pointIndexes: [pointIndex],
+    }))
+  }, [expandedForecastMode, expandedPredictionPoints, isHistoricalForecastActive])
 
   const expandedYAxisTicks = useMemo(() => {
     if (!expandedGeometry) {
@@ -1209,7 +1367,55 @@ function App() {
     isHistoricalForecastActive &&
     expandedPredictionDisplayPoints.length > 0 &&
     expandedHoverIndex !== null &&
-    expandedHoverIndex >= predictionDisplayStartIndex
+    (isPredictionFocusChartActive || expandedHoverIndex >= predictionDisplayStartIndex)
+
+  const highlightedPredictionChartPoints = useMemo(() => {
+    if (
+      !expandedGeometry ||
+      hoveredForecastPointIndexes.length === 0 ||
+      !isHistoricalForecastActive ||
+      expandedPredictionDisplayPoints.length === 0
+    ) {
+      return [] as Array<{ x: number; y: number; time: string }>
+    }
+
+    const chartPoints: Array<{ x: number; y: number; time: string }> = []
+    const seen = new Set<number>()
+
+    for (const predictionPointIndex of hoveredForecastPointIndexes) {
+      if (
+        predictionPointIndex < 0 ||
+        predictionPointIndex >= expandedPredictionDisplayPoints.length
+      ) {
+        continue
+      }
+
+      const chartPointIndex = isPredictionFocusChartActive
+        ? predictionPointIndex
+        : predictionDisplayStartIndex + predictionPointIndex
+
+      if (
+        chartPointIndex < 0 ||
+        chartPointIndex >= expandedGeometry.points.length ||
+        seen.has(chartPointIndex)
+      ) {
+        continue
+      }
+
+      seen.add(chartPointIndex)
+      const chartPoint = expandedGeometry.points[chartPointIndex]
+      chartPoints.push({ x: chartPoint.x, y: chartPoint.y, time: chartPoint.time })
+    }
+
+    return chartPoints
+  }, [
+    expandedGeometry,
+    expandedPredictionDisplayPoints.length,
+    hoveredForecastPointIndexes,
+    isHistoricalForecastActive,
+    isPredictionFocusChartActive,
+    predictionDisplayStartIndex,
+  ])
 
   const expandedTooltipStyle = useMemo(() => {
     if (!expandedGeometry || !expandedHoverPoint) {
@@ -1394,6 +1600,32 @@ function App() {
       setIsSending(false)
     }
   }
+
+  const setForecastTableHover = useCallback(
+    (rowKey: string, pointIndexes: number[]) => {
+      setHoveredForecastRowKey(rowKey)
+      setHoveredForecastPointIndexes(pointIndexes)
+
+      const [firstPointIndex] = pointIndexes
+      if (firstPointIndex === undefined) {
+        setExpandedHoverIndex(null)
+        return
+      }
+
+      setExpandedHoverIndex(
+        isPredictionFocusChartActive
+          ? firstPointIndex
+          : predictionDisplayStartIndex + firstPointIndex,
+      )
+    },
+    [isPredictionFocusChartActive, predictionDisplayStartIndex],
+  )
+
+  const clearForecastTableHover = useCallback(() => {
+    setHoveredForecastRowKey(null)
+    setHoveredForecastPointIndexes([])
+    setExpandedHoverIndex(null)
+  }, [])
 
   const handleExpandedChartMove = (event: ReactMouseEvent<SVGSVGElement>) => {
     if (!expandedGeometry) {
@@ -1770,10 +2002,14 @@ function App() {
                         const mode = event.target.value as ForecastMode
                         setExpandedForecastMode(mode)
                         setExpandedHoverIndex(null)
+                        setHoveredForecastPointIndexes([])
+                        setHoveredForecastRowKey(null)
                         if (mode === 'weekly') {
                           setExpandedTimeframe('all')
                         } else if (mode === 'hourly') {
                           setExpandedTimeframe('1d')
+                        } else {
+                          setIsPredictionFocusActive(false)
                         }
                       }}
                     >
@@ -1791,6 +2027,30 @@ function App() {
                     disabled={isHistoricalGeminiStreaming || expandedPoints.length === 0}
                   >
                     {isHistoricalGeminiStreaming ? 'Gemini...' : 'Use Gemini'}
+                  </button>
+                )}
+                {expandedMode === 'historical' && isHistoricalForecastActive && (
+                  <button
+                    type="button"
+                    className={`prediction-focus-toggle${
+                      isPredictionFocusChartActive ? ' active' : ''
+                    }`}
+                    onClick={() => {
+                      setIsPredictionFocusActive((current) => {
+                        const next = !current
+                        if (next) {
+                          setShowExpandedAxes(true)
+                        }
+                        return next
+                      })
+                      setExpandedHoverIndex(null)
+                      setHoveredForecastPointIndexes([])
+                      setHoveredForecastRowKey(null)
+                    }}
+                    disabled={expandedPredictionPoints.length === 0}
+                    aria-pressed={isPredictionFocusChartActive}
+                  >
+                    {isPredictionFocusChartActive ? 'Show full trend' : 'Focus on predictions'}
                   </button>
                 )}
                 <label className="axis-toggle">
@@ -1893,7 +2153,9 @@ function App() {
               </div>
             )}
 
-            <div className="expanded-chart-wrap">
+            <div
+              className={`expanded-chart-wrap${isPredictionFocusChartActive ? ' prediction-focus-active' : ''}`}
+            >
               {isHistoricalForecastActive && isForecastLoading && (
                 <div className="forecast-loading-overlay">
                   <span>Generating forecast...</span>
@@ -1902,7 +2164,10 @@ function App() {
               {expandedGeometry ? (
                 <>
                   <svg
-                    className="expanded-sparkline"
+                    key={chartAnimationKey}
+                    className={`expanded-sparkline${
+                      isHistoricalForecastActive ? ' forecast-chart-enter' : ''
+                    }${isPredictionFocusChartActive ? ' prediction-only' : ''}`}
                     viewBox={`0 0 ${expandedGeometry.width} ${expandedGeometry.height}`}
                     role="img"
                     aria-label={`${expandedMetricLabel} ${
@@ -2011,11 +2276,15 @@ function App() {
                         </text>
                       </>
                     )}
-                    <path className="sparkline-line" d={expandedHistoricalPath} />
+                    {expandedHistoricalPath && (
+                      <path className="sparkline-line" d={expandedHistoricalPath} />
+                    )}
                     {expandedPredictionPath && (
                       <path
-                        key={predictionAnimationKey}
-                        className="sparkline-line sparkline-prediction-line forecast-fade-in"
+                        key={`${predictionAnimationKey}-${isPredictionFocusChartActive ? 'focus' : 'context'}`}
+                        className={`sparkline-line sparkline-prediction-line forecast-fade-in${
+                          isPredictionFocusChartActive ? ' prediction-focus-line' : ''
+                        }`}
                         d={expandedPredictionPath}
                       />
                     )}
@@ -2043,6 +2312,15 @@ function App() {
                         r="5"
                       />
                     )}
+                    {highlightedPredictionChartPoints.map((point) => (
+                      <circle
+                        key={`${point.time}-${point.x}-${point.y}`}
+                        className="forecast-table-hover-point"
+                        cx={point.x}
+                        cy={point.y}
+                        r={isPredictionFocusChartActive ? '6' : '5'}
+                      />
+                    ))}
                     {expandedHoverPoint && (
                       <>
                         <line
@@ -2115,6 +2393,77 @@ function App() {
                 <strong>{expandedPointCount}</strong>
               </div>
             </div>
+
+            {isHistoricalForecastActive && expandedPredictionPoints.length > 0 && (
+              <section className="forecast-insights-panel">
+                <div className="forecast-insights-header">
+                  <p className="eyebrow">Forecast Insights</p>
+                  <h4>
+                    {expandedMetricLabel} ({expandedMetricUnit}) -{' '}
+                    {expandedForecastMode === 'weekly' ? 'Weekly' : 'Hourly'}
+                  </h4>
+                  {forecastPeriodLabel && (
+                    <p className="forecast-insights-period">{forecastPeriodLabel}</p>
+                  )}
+                </div>
+
+                <div className="forecast-insights-table-wrap">
+                  {expandedForecastMode === 'weekly' ? (
+                    <table className="forecast-insights-table forecast-table-transition">
+                      <thead>
+                        <tr>
+                          <th>Day</th>
+                          <th>Avg</th>
+                          <th>Min</th>
+                          <th>Max</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {weeklyForecastRows.map((row) => (
+                          <tr
+                            key={row.dayKey}
+                            className={
+                              hoveredForecastRowKey === row.dayKey ? 'is-hovered' : undefined
+                            }
+                            onMouseEnter={() =>
+                              setForecastTableHover(row.dayKey, row.pointIndexes)
+                            }
+                            onMouseLeave={clearForecastTableHover}
+                          >
+                            <td>{row.day}</td>
+                            <td>{formatMetricValue(expandedMetricKey, row.average)}</td>
+                            <td>{formatMetricValue(expandedMetricKey, row.min)}</td>
+                            <td>{formatMetricValue(expandedMetricKey, row.max)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <table className="forecast-insights-table forecast-table-transition">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>{expandedMetricLabel}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {hourlyForecastRows.map((row) => (
+                          <tr
+                            key={row.key}
+                            className={hoveredForecastRowKey === row.key ? 'is-hovered' : undefined}
+                            onMouseEnter={() => setForecastTableHover(row.key, row.pointIndexes)}
+                            onMouseLeave={clearForecastTableHover}
+                          >
+                            <td>{row.time}</td>
+                            <td>{formatMetricValue(expandedMetricKey, row.value)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </section>
+            )}
           </section>
         </div>
       )}
