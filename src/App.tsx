@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm'
 
 type MetricId = 'temperature' | 'humidity' | 'pressure'
 type LiveTimeframe = '1h' | '2h' | '6h' | '10h' | '12h'
-type HistoricalTimeframe = '1h' | '6h' | '12h' | '24h' | '3d' | 'all'
+type HistoricalTimeframe = 'all' | '1d' | '3d'
 type ExpandedTimeframe = LiveTimeframe | HistoricalTimeframe
 type HistoricalWindow = HistoricalTimeframe
 
@@ -83,21 +83,16 @@ const liveTimeframeOptions: Array<{ value: LiveTimeframe; label: string }> = [
 
 const historicalTimeframeOptions: Array<{ value: HistoricalTimeframe; label: string }> = [
   { value: 'all', label: 'All' },
-  { value: '1h', label: '1H' },
-  { value: '6h', label: '6H' },
-  { value: '12h', label: '12H' },
-  { value: '24h', label: '24H' },
-  { value: '3d', label: '3D' },
+  { value: '1d', label: '1 Day' },
+  { value: '3d', label: '3 Day' },
 ]
 
-const timeframeMs: Record<Exclude<ExpandedTimeframe, 'all'>, number> = {
+const timeframeMs: Record<LiveTimeframe, number> = {
   '1h': 1 * 60 * 60 * 1000,
   '2h': 2 * 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
   '10h': 10 * 60 * 60 * 1000,
   '12h': 12 * 60 * 60 * 1000,
-  '24h': 24 * 60 * 60 * 1000,
-  '3d': 3 * 24 * 60 * 60 * 1000,
 }
 
 const defaultGreeting: GeminiMessage = {
@@ -250,12 +245,8 @@ const normalizeMeterValue = (metric: MetricSeries | null) => {
   return ((metric.latest - metric.min) / (metric.max - metric.min)) * 100
 }
 
-const filterByTimeframe = (points: MetricPoint[], timeframe: ExpandedTimeframe) => {
+const filterByTimeframe = (points: MetricPoint[], timeframe: LiveTimeframe) => {
   if (points.length === 0) {
-    return points
-  }
-
-  if (timeframe === 'all') {
     return points
   }
 
@@ -681,9 +672,9 @@ function App() {
   }, [snapshotMetrics])
 
   const weatherOverview = useMemo(() => {
-    const temp = historicalMetrics?.temperature.latest ?? null
-    const humi = historicalMetrics?.humidity.latest ?? null
-    const pres = historicalMetrics?.pressure.latest ?? null
+    const temp = snapshotMetrics?.temperature.latest ?? null
+    const humi = snapshotMetrics?.humidity.latest ?? null
+    const pres = snapshotMetrics?.pressure.latest ?? null
 
     if (temp === null || humi === null || pres === null) {
       return {
@@ -700,15 +691,15 @@ function App() {
     const pressureScore = clamp(100 - Math.abs(pres - 1013) * 1.5, 0, 100)
 
     const tempStability = stabilityFromDelta(
-      averageDelta(historicalMetrics?.temperature.points ?? [], 12),
+      averageDelta(snapshotMetrics?.temperature.points ?? [], 12),
       0.35,
     )
     const humiStability = stabilityFromDelta(
-      averageDelta(historicalMetrics?.humidity.points ?? [], 12),
+      averageDelta(snapshotMetrics?.humidity.points ?? [], 12),
       1.2,
     )
     const pressureStability = stabilityFromDelta(
-      averageDelta(historicalMetrics?.pressure.points ?? [], 12),
+      averageDelta(snapshotMetrics?.pressure.points ?? [], 12),
       0.6,
     )
     const stabilityScore =
@@ -729,7 +720,7 @@ function App() {
       status,
       chipClass: `chip ${statusChipClass(status)}`,
     }
-  }, [historicalMetrics])
+  }, [snapshotMetrics])
 
   const quickMetrics = useMemo(() => {
     const temperature = snapshotMetrics?.temperature ?? null
@@ -774,21 +765,21 @@ function App() {
     () => [
       {
         label: 'Temperature',
-        value: formatMetricValue('temperature', historicalMetrics?.temperature.latest ?? null),
+        value: formatMetricValue('temperature', snapshotMetrics?.temperature.latest ?? null),
         unit: metricStyleConfig.temperature.fallbackUnit,
       },
       {
         label: 'Humidity',
-        value: formatMetricValue('humidity', historicalMetrics?.humidity.latest ?? null),
+        value: formatMetricValue('humidity', snapshotMetrics?.humidity.latest ?? null),
         unit: metricStyleConfig.humidity.fallbackUnit,
       },
       {
         label: 'Pressure',
-        value: formatMetricValue('pressure', historicalMetrics?.pressure.latest ?? null),
+        value: formatMetricValue('pressure', snapshotMetrics?.pressure.latest ?? null),
         unit: metricStyleConfig.pressure.fallbackUnit,
       },
     ],
-    [historicalMetrics],
+    [snapshotMetrics],
   )
 
   const trendCards = useMemo(() => {
@@ -848,8 +839,12 @@ function App() {
       return []
     }
 
-    return filterByTimeframe(expandedMetricData.points, expandedTimeframe)
-  }, [expandedMetricData, expandedTimeframe])
+    if (expandedMode === 'historical') {
+      return expandedMetricData.points
+    }
+
+    return filterByTimeframe(expandedMetricData.points, expandedTimeframe as LiveTimeframe)
+  }, [expandedMetricData, expandedMode, expandedTimeframe])
 
   const expandedFirstPoint = expandedPoints[0]
   const expandedLastPoint = expandedPoints[expandedPoints.length - 1]
@@ -858,6 +853,20 @@ function App() {
     () => resamplePoints(expandedPoints, 500),
     [expandedPoints],
   )
+
+  const liveDelta = useMemo(() => {
+    if (expandedMode !== 'live' || expandedPoints.length < 2) {
+      return null
+    }
+
+    const first = expandedPoints[0]
+    const last = expandedPoints[expandedPoints.length - 1]
+    if (!first || !last) {
+      return null
+    }
+
+    return last.value - first.value
+  }, [expandedMode, expandedPoints])
 
   const expandedGeometry = useMemo(
     () =>
@@ -1042,7 +1051,9 @@ function App() {
             {quickMetrics.map((metric) => (
               <button
                 type="button"
-                className="mini-card mini-card-button"
+                className={`mini-card mini-card-button${
+                  metric.metricId === 'pressure' ? ' mini-card-span' : ''
+                }`}
                 key={metric.label}
                 style={accentStyle(metric.accent)}
                 onClick={() => openExpandedMetric(metric.metricId, 'live')}
@@ -1111,8 +1122,8 @@ function App() {
               <span className="gauge-sub">
                 {historicalMetrics?.pressure.max !== null &&
                 historicalMetrics?.pressure.max !== undefined
-                  ? `Peak ${historicalMetrics.pressure.max.toFixed(1)} hPa`
-                  : 'Pressure trend unavailable'}
+                  ? `Yesterday peak ${formatMetricValue('pressure', historicalMetrics.pressure.max)} hPa`
+                  : 'Yesterday data unavailable'}
               </span>
             </div>
             <div className="gauge-scale">
@@ -1213,7 +1224,7 @@ function App() {
                     ?
                   </button>
                 </div>
-                <p>Composite score from the latest historical readings.</p>
+                <p>Composite score from the latest live readings.</p>
               </div>
               <button
                 type="button"
@@ -1334,6 +1345,13 @@ function App() {
             <div className="metric-modal-value">
               {formatMetricValue(expandedMetricKey, expandedMetricData?.latest ?? null)}{' '}
               <span>{expandedMetricUnit}</span>
+              {expandedMode === 'live' && liveDelta !== null && (
+                <span
+                  className={`metric-modal-delta ${trendClassFromDelta(liveDelta)}`}
+                >
+                  ({formatMetricDelta(expandedMetricKey, liveDelta)})
+                </span>
+              )}
             </div>
 
             <div className="expanded-chart-wrap">

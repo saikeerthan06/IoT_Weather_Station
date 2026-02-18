@@ -25,11 +25,8 @@ type SensorRow = {
 const router = Router()
 
 const WINDOW_PRESETS: Record<string, number | null> = {
-  '1h': 1 * 60 * 60 * 1000,
-  '6h': 6 * 60 * 60 * 1000,
-  '12h': 12 * 60 * 60 * 1000,
-  '24h': 24 * 60 * 60 * 1000,
-  '3d': 3 * 24 * 60 * 60 * 1000,
+  '1d': 1,
+  '3d': 3,
   all: null,
 }
 
@@ -106,14 +103,23 @@ router.get('/metrics', async (req, res) => {
     )
 
     const baseQuery = `SELECT time, temp, humi, pres FROM ${tableName}`
-    const query =
-      windowMs === null
-        ? `${baseQuery} ORDER BY time::timestamptz ASC`
-        : `${baseQuery} WHERE time::timestamptz >= $1::timestamptz ORDER BY time::timestamptz ASC`
-    const params =
-      windowMs === null ? [] : [new Date(Date.now() - windowMs).toISOString()]
-
-    const { rows } = await db.query<SensorRow>(query, params)
+    let rows: SensorRow[] = []
+    if (windowMs === null) {
+      const result = await db.query<SensorRow>(
+        `${baseQuery} ORDER BY time::timestamptz ASC`,
+      )
+      rows = result.rows
+    } else {
+      const days = windowMs
+      const result = await db.query<SensorRow>(
+        `${baseQuery}
+         WHERE time::timestamptz >= (CURRENT_DATE - ($1::int * INTERVAL '1 day'))
+           AND time::timestamptz < CURRENT_DATE
+         ORDER BY time::timestamptz ASC`,
+        [days],
+      )
+      rows = result.rows
+    }
 
     const temperaturePoints: Array<{ time: string; value: number }> = []
     const humidityPoints: Array<{ time: string; value: number }> = []

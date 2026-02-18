@@ -325,6 +325,10 @@
   gap: 8px;
 }
 
+.mini-card-span {
+  grid-column: span 2;
+}
+
 .mini-card-button {
   appearance: none;
   text-align: left;
@@ -935,6 +939,18 @@
   text-transform: uppercase;
   color: var(--muted);
   margin-left: 8px;
+}
+
+.metric-modal-delta {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
 }
 
 .expanded-chart-wrap {

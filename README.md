@@ -50,3 +50,8 @@ Repository for an IoT Weather Station project.
 ## Notes
 - The UI requires a valid Gemini API key.
 - The backend default port is `5050`.
+
+
+## Model-Training 
+
+Will be using XGBoost model for the UI. The code to train is in `Climatrix2.ipynb`, and the model file is saved under `model-training/artefacts/XGB`
