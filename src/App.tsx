@@ -456,6 +456,7 @@ function App() {
   const [expandedForecastMetrics, setExpandedForecastMetrics] = useState<
     Record<MetricId, ForecastMetricSeries> | null
   >(null)
+  const [isForecastLoading, setIsForecastLoading] = useState(false)
   const [expandedForecastError, setExpandedForecastError] = useState<string | null>(null)
   const [expandedHoverIndex, setExpandedHoverIndex] = useState<number | null>(null)
 
@@ -554,6 +555,11 @@ function App() {
       return
     }
 
+    if (expandedMode === 'historical' && expandedForecastMode !== 'off') {
+      setExpandedError(null)
+      return
+    }
+
     const controller = new AbortController()
 
     const loadExpanded = async () => {
@@ -602,11 +608,12 @@ function App() {
         window.clearInterval(intervalId)
       }
     }
-  }, [expandedMetric, expandedMode, expandedTimeframe])
+  }, [expandedMetric, expandedMode, expandedTimeframe, expandedForecastMode])
 
   useEffect(() => {
     if (expandedMode !== 'historical' || expandedForecastMode === 'off' || !expandedMetric) {
       setExpandedForecastMetrics(null)
+      setIsForecastLoading(false)
       setExpandedForecastError(null)
       return
     }
@@ -615,6 +622,7 @@ function App() {
     const requestedMode = expandedForecastMode
 
     const loadForecast = async () => {
+      setIsForecastLoading(true)
       try {
         const response = await fetch(`/api/history/forecast?mode=${requestedMode}`, {
           signal: controller.signal,
@@ -638,6 +646,10 @@ function App() {
           loadError instanceof Error ? loadError.message : 'Failed to load forecast.'
         setExpandedForecastMetrics(null)
         setExpandedForecastError(message)
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsForecastLoading(false)
+        }
       }
     }
 
@@ -1034,6 +1046,18 @@ function App() {
     expandedGeometry && expandedPredictionDisplayPoints.length > 0
       ? expandedGeometry.points[expandedGeometry.points.length - 1]
       : null
+  const predictionAnimationKey = useMemo(() => {
+    if (expandedPredictionDisplayPoints.length === 0) {
+      return 'none'
+    }
+
+    const first = expandedPredictionDisplayPoints[0]?.time ?? 'start'
+    const last =
+      expandedPredictionDisplayPoints[expandedPredictionDisplayPoints.length - 1]?.time ??
+      'end'
+
+    return `${expandedForecastMode}-${expandedPredictionDisplayPoints.length}-${first}-${last}`
+  }, [expandedForecastMode, expandedPredictionDisplayPoints])
   const expandedMin = expandedGeometry?.min ?? null
   const expandedMax = expandedGeometry?.max ?? null
   const expandedPointCount = isHistoricalForecastActive
@@ -1564,6 +1588,11 @@ function App() {
             )}
 
             <div className="expanded-chart-wrap">
+              {isHistoricalForecastActive && isForecastLoading && (
+                <div className="forecast-loading-overlay">
+                  <span>Generating forecast...</span>
+                </div>
+              )}
               {expandedGeometry ? (
                 <>
                   <svg
@@ -1678,7 +1707,11 @@ function App() {
                     )}
                     <path className="sparkline-line" d={expandedHistoricalPath} />
                     {expandedPredictionPath && (
-                      <path className="sparkline-line sparkline-prediction-line" d={expandedPredictionPath} />
+                      <path
+                        key={predictionAnimationKey}
+                        className="sparkline-line sparkline-prediction-line forecast-fade-in"
+                        d={expandedPredictionPath}
+                      />
                     )}
                     {!expandedPredictionPath && expandedGeometry.dot && (
                       <circle

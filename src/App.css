@@ -1020,6 +1020,29 @@
   overflow: hidden;
 }
 
+.forecast-loading-overlay {
+  position: absolute;
+  inset: 10px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  border: 1px solid rgba(120, 150, 180, 0.24);
+  background:
+    linear-gradient(120deg, rgba(10, 16, 24, 0.78), rgba(7, 12, 20, 0.62), rgba(10, 16, 24, 0.78)),
+    rgba(9, 14, 22, 0.62);
+  background-size: 220% 220%;
+  animation: forecast-sweep 1.2s linear infinite;
+  pointer-events: none;
+}
+
+.forecast-loading-overlay span {
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(228, 238, 247, 0.9);
+}
+
 .expanded-sparkline {
   width: 100%;
   height: 100%;
@@ -1060,6 +1083,10 @@
 .sparkline-prediction-line {
   stroke-dasharray: 9 7;
   stroke-width: 2.7;
+}
+
+.forecast-fade-in {
+  animation: forecast-line-enter 280ms ease;
 }
 
 .sparkline-prediction-dot {
@@ -1441,6 +1468,24 @@
   50% {
     transform: translateY(-6px);
     opacity: 1;
+  }
+}
+
+@keyframes forecast-line-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes forecast-sweep {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 100% 50%;
   }
 }
 
