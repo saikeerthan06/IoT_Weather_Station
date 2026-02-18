@@ -27,8 +27,19 @@ type MetricSeries = {
   available: boolean
 }
 
+type ForecastMode = 'off' | 'hourly' | 'weekly'
+
+type ForecastMetricSeries = MetricSeries & {
+  predictionPoints: MetricPoint[]
+}
+
 type MetricsApiResponse = {
   metrics: Record<MetricId, MetricSeries>
+}
+
+type ForecastApiResponse = {
+  warning?: string | null
+  metrics: Record<MetricId, ForecastMetricSeries>
 }
 
 type GeminiMessage = {
@@ -106,7 +117,7 @@ const LIVE_SNAPSHOT_POLL_MS = 60_000
 const LIVE_MODAL_POLL_MS = 10_000
 const HISTORICAL_POLL_MS = 15 * 60_000
 const SNAPSHOT_WINDOW: LiveTimeframe = '12h'
-const HISTORICAL_WINDOW: HistoricalWindow = 'all'
+const HISTORICAL_WINDOW: HistoricalWindow = '3d'
 const PRESSURE_GAUGE_MIN = 980
 const PRESSURE_GAUGE_MAX = 1040
 
@@ -340,6 +351,16 @@ const buildChartGeometry = (
   }
 }
 
+const buildLinePathFromChartPoints = (points: Array<{ x: number; y: number }>) => {
+  if (points.length === 0) {
+    return ''
+  }
+
+  return points
+    .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(' ')
+}
+
 const formatTimestamp = (iso: string) =>
   new Date(iso).toLocaleString([], {
     month: 'short',
@@ -431,6 +452,11 @@ function App() {
   const [isMetricClosing, setIsMetricClosing] = useState(false)
   const [showExpandedAxes, setShowExpandedAxes] = useState(false)
   const [expandedTimeframe, setExpandedTimeframe] = useState<ExpandedTimeframe>('12h')
+  const [expandedForecastMode, setExpandedForecastMode] = useState<ForecastMode>('off')
+  const [expandedForecastMetrics, setExpandedForecastMetrics] = useState<
+    Record<MetricId, ForecastMetricSeries> | null
+  >(null)
+  const [expandedForecastError, setExpandedForecastError] = useState<string | null>(null)
   const [expandedHoverIndex, setExpandedHoverIndex] = useState<number | null>(null)
 
   const [geminiOpen, setGeminiOpen] = useState(false)
@@ -579,6 +605,50 @@ function App() {
   }, [expandedMetric, expandedMode, expandedTimeframe])
 
   useEffect(() => {
+    if (expandedMode !== 'historical' || expandedForecastMode === 'off' || !expandedMetric) {
+      setExpandedForecastMetrics(null)
+      setExpandedForecastError(null)
+      return
+    }
+
+    const controller = new AbortController()
+    const requestedMode = expandedForecastMode
+
+    const loadForecast = async () => {
+      try {
+        const response = await fetch(`/api/history/forecast?mode=${requestedMode}`, {
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          throw new Error('Failed to load forecast.')
+        }
+
+        const payload = (await response.json()) as ForecastApiResponse
+        setExpandedForecastMetrics(payload.metrics)
+        setExpandedForecastError(
+          payload.warning ? String(payload.warning) : null,
+        )
+      } catch (loadError) {
+        if (controller.signal.aborted) {
+          return
+        }
+
+        const message =
+          loadError instanceof Error ? loadError.message : 'Failed to load forecast.'
+        setExpandedForecastMetrics(null)
+        setExpandedForecastError(message)
+      }
+    }
+
+    void loadForecast()
+
+    return () => {
+      controller.abort()
+    }
+  }, [expandedMode, expandedForecastMode, expandedMetric])
+
+  useEffect(() => {
     if (!isMetricClosing) {
       return
     }
@@ -596,7 +666,10 @@ function App() {
     (metricId: MetricId, mode: 'live' | 'historical') => {
       setExpandedMetric(metricId)
       setExpandedMode(mode)
-      setExpandedTimeframe(mode === 'historical' ? 'all' : '12h')
+      setExpandedTimeframe(mode === 'historical' ? '3d' : '12h')
+      setExpandedForecastMode('off')
+      setExpandedForecastMetrics(null)
+      setExpandedForecastError(null)
       setExpandedHoverIndex(null)
       setShowExpandedAxes(false)
       setIsMetricClosing(false)
@@ -656,7 +729,7 @@ function App() {
 
   useEffect(() => {
     setExpandedHoverIndex(null)
-  }, [expandedMetric, expandedMode, expandedTimeframe])
+  }, [expandedMetric, expandedMode, expandedTimeframe, expandedForecastMode])
 
   const latestObservationTime = useMemo(() => {
     if (!snapshotMetrics) {
@@ -825,16 +898,35 @@ function App() {
   const expandedMetricData = expandedMetric
     ? expandedMetrics?.[expandedMetric] ?? expandedFallbackMetrics?.[expandedMetric] ?? null
     : null
+  const isHistoricalForecastActive =
+    expandedMode === 'historical' && expandedForecastMode !== 'off'
+  const expandedForecastMetricData =
+    expandedMetric && isHistoricalForecastActive
+      ? expandedForecastMetrics?.[expandedMetric] ?? null
+      : null
   const expandedMetricKey: MetricId =
-    expandedMetricData?.key ?? expandedMetric ?? 'temperature'
+    expandedForecastMetricData?.key ?? expandedMetricData?.key ?? expandedMetric ?? 'temperature'
   const expandedMetricLabel =
-    expandedMetricData?.label ?? metricStyleConfig[expandedMetricKey].defaultLabel
+    expandedForecastMetricData?.label ??
+    expandedMetricData?.label ??
+    metricStyleConfig[expandedMetricKey].defaultLabel
   const expandedMetricUnit =
-    expandedMetricData?.unit ?? metricStyleConfig[expandedMetricKey].fallbackUnit
+    expandedForecastMetricData?.unit ??
+    expandedMetricData?.unit ??
+    metricStyleConfig[expandedMetricKey].fallbackUnit
   const activeTimeframeOptions =
     expandedMode === 'live' ? liveTimeframeOptions : historicalTimeframeOptions
+  const isTimeframeLockedByForecast = isHistoricalForecastActive
 
   const expandedPoints = useMemo(() => {
+    if (isHistoricalForecastActive) {
+      if (expandedForecastMetricData) {
+        return expandedForecastMetricData.points
+      }
+
+      return expandedMetricData?.points ?? []
+    }
+
     if (!expandedMetricData) {
       return []
     }
@@ -844,15 +936,40 @@ function App() {
     }
 
     return filterByTimeframe(expandedMetricData.points, expandedTimeframe as LiveTimeframe)
-  }, [expandedMetricData, expandedMode, expandedTimeframe])
+  }, [
+    expandedForecastMetricData,
+    expandedMetricData,
+    expandedMode,
+    expandedTimeframe,
+    isHistoricalForecastActive,
+  ])
 
-  const expandedFirstPoint = expandedPoints[0]
-  const expandedLastPoint = expandedPoints[expandedPoints.length - 1]
+  const expandedPredictionPoints = useMemo(() => {
+    if (!isHistoricalForecastActive) {
+      return []
+    }
 
-  const expandedDisplayPoints = useMemo(
-    () => resamplePoints(expandedPoints, 500),
-    [expandedPoints],
+    return expandedForecastMetricData?.predictionPoints ?? []
+  }, [expandedForecastMetricData, isHistoricalForecastActive])
+
+  const expandedHistoricalDisplayPoints = useMemo(
+    () => resamplePoints(expandedPoints, isHistoricalForecastActive ? 360 : 500),
+    [expandedPoints, isHistoricalForecastActive],
   )
+  const expandedPredictionDisplayPoints = useMemo(
+    () =>
+      isHistoricalForecastActive
+        ? resamplePoints(expandedPredictionPoints, 220)
+        : [],
+    [expandedPredictionPoints, isHistoricalForecastActive],
+  )
+  const expandedDisplayPoints = useMemo(
+    () => [...expandedHistoricalDisplayPoints, ...expandedPredictionDisplayPoints],
+    [expandedHistoricalDisplayPoints, expandedPredictionDisplayPoints],
+  )
+  const predictionDisplayStartIndex = expandedHistoricalDisplayPoints.length
+  const expandedFirstPoint = expandedDisplayPoints[0]
+  const expandedLastPoint = expandedDisplayPoints[expandedDisplayPoints.length - 1]
 
   const liveDelta = useMemo(() => {
     if (expandedMode !== 'live' || expandedPoints.length < 2) {
@@ -878,8 +995,50 @@ function App() {
       ),
     [expandedDisplayPoints, showExpandedAxes],
   )
+  const expandedHistoricalPath = useMemo(() => {
+    if (!expandedGeometry) {
+      return ''
+    }
+
+    if (!isHistoricalForecastActive || expandedPredictionDisplayPoints.length === 0) {
+      return expandedGeometry.linePath
+    }
+
+    return buildLinePathFromChartPoints(
+      expandedGeometry.points.slice(0, predictionDisplayStartIndex),
+    )
+  }, [
+    expandedGeometry,
+    expandedPredictionDisplayPoints.length,
+    isHistoricalForecastActive,
+    predictionDisplayStartIndex,
+  ])
+  const expandedPredictionPath = useMemo(() => {
+    if (!expandedGeometry || !isHistoricalForecastActive || expandedPredictionDisplayPoints.length === 0) {
+      return ''
+    }
+
+    const startIndex = predictionDisplayStartIndex > 0 ? predictionDisplayStartIndex - 1 : 0
+    return buildLinePathFromChartPoints(expandedGeometry.points.slice(startIndex))
+  }, [
+    expandedGeometry,
+    expandedPredictionDisplayPoints.length,
+    isHistoricalForecastActive,
+    predictionDisplayStartIndex,
+  ])
+  const expandedHistoricalDot =
+    expandedGeometry && predictionDisplayStartIndex > 0
+      ? expandedGeometry.points[predictionDisplayStartIndex - 1]
+      : expandedGeometry?.dot
+  const expandedPredictionDot =
+    expandedGeometry && expandedPredictionDisplayPoints.length > 0
+      ? expandedGeometry.points[expandedGeometry.points.length - 1]
+      : null
   const expandedMin = expandedGeometry?.min ?? null
   const expandedMax = expandedGeometry?.max ?? null
+  const expandedPointCount = isHistoricalForecastActive
+    ? expandedPoints.length + expandedPredictionPoints.length
+    : expandedPoints.length
 
   const expandedYAxisTicks = useMemo(() => {
     if (!expandedGeometry) {
@@ -912,6 +1071,11 @@ function App() {
     expandedHoverIndex < expandedGeometry.points.length
       ? expandedGeometry.points[expandedHoverIndex]
       : null
+  const expandedHoverIsPrediction =
+    isHistoricalForecastActive &&
+    expandedPredictionDisplayPoints.length > 0 &&
+    expandedHoverIndex !== null &&
+    expandedHoverIndex >= predictionDisplayStartIndex
 
   const expandedTooltipStyle = useMemo(() => {
     if (!expandedGeometry || !expandedHoverPoint) {
@@ -1148,7 +1312,7 @@ function App() {
           >
             <div className="trend-header">
               <div>
-                <p className="eyebrow">All time</p>
+                <p className="eyebrow">Last 3 days</p>
                 <h3>{metric.label}</h3>
               </div>
               <div className="trend-value">
@@ -1194,7 +1358,7 @@ function App() {
       <footer className="dashboard-footer">
         <div className="footer-left">
           <span className="footer-dot" />
-          Live metrics powered by sensor_data. Historical metrics powered by historical_data.
+          Live metrics powered by sensor_data. Historical metrics powered by historical_data + sensor_data.
         </div>
         <div className="footer-right">Weather Station UI</div>
       </footer>
@@ -1317,13 +1481,42 @@ function App() {
                       type="button"
                       className={`timeframe-chip ${
                         expandedTimeframe === option.value ? 'active' : ''
-                      }`}
+                      } ${isTimeframeLockedByForecast ? 'disabled' : ''}`}
+                      disabled={isTimeframeLockedByForecast}
+                      aria-disabled={isTimeframeLockedByForecast}
+                      title={
+                        isTimeframeLockedByForecast
+                          ? 'Forecast mode controls historical range.'
+                          : undefined
+                      }
                       onClick={() => setExpandedTimeframe(option.value)}
                     >
                       {option.label}
                     </button>
                   ))}
                 </div>
+                {expandedMode === 'historical' && (
+                  <label className="forecast-select">
+                    <span>Show predictions/forecast</span>
+                    <select
+                      value={expandedForecastMode}
+                      onChange={(event) => {
+                        const mode = event.target.value as ForecastMode
+                        setExpandedForecastMode(mode)
+                        setExpandedHoverIndex(null)
+                        if (mode === 'weekly') {
+                          setExpandedTimeframe('all')
+                        } else if (mode === 'hourly') {
+                          setExpandedTimeframe('1d')
+                        }
+                      }}
+                    >
+                      <option value="off">Off</option>
+                      <option value="hourly">Hourly (today)</option>
+                      <option value="weekly">Weekly (next 7 days)</option>
+                    </select>
+                  </label>
+                )}
                 <label className="axis-toggle">
                   <input
                     type="checkbox"
@@ -1343,7 +1536,10 @@ function App() {
             </div>
 
             <div className="metric-modal-value">
-              {formatMetricValue(expandedMetricKey, expandedMetricData?.latest ?? null)}{' '}
+              {formatMetricValue(
+                expandedMetricKey,
+                expandedForecastMetricData?.latest ?? expandedMetricData?.latest ?? null,
+              )}{' '}
               <span>{expandedMetricUnit}</span>
               {expandedMode === 'live' && liveDelta !== null && (
                 <span
@@ -1353,6 +1549,19 @@ function App() {
                 </span>
               )}
             </div>
+
+            {isHistoricalForecastActive && expandedPredictionDisplayPoints.length > 0 && (
+              <div className="forecast-legend">
+                <span className="forecast-legend-item">
+                  <i className="forecast-line-solid" />
+                  Historical
+                </span>
+                <span className="forecast-legend-item">
+                  <i className="forecast-line-dotted" />
+                  Predictions
+                </span>
+              </div>
+            )}
 
             <div className="expanded-chart-wrap">
               {expandedGeometry ? (
@@ -1379,11 +1588,13 @@ function App() {
                         <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.72" />
                       </linearGradient>
                     </defs>
-                    <path
-                      className="sparkline-area"
-                      d={expandedGeometry.areaPath}
-                      fill="url(#spark-expanded)"
-                    />
+                    {!isHistoricalForecastActive && (
+                      <path
+                        className="sparkline-area"
+                        d={expandedGeometry.areaPath}
+                        fill="url(#spark-expanded)"
+                      />
+                    )}
                     {showExpandedAxes && (
                       <>
                         <line
@@ -1465,13 +1676,34 @@ function App() {
                         </text>
                       </>
                     )}
-                    <path className="sparkline-line" d={expandedGeometry.linePath} />
-                    <circle
-                      className={`sparkline-dot${expandedMode === 'live' ? ' live-dot' : ''}`}
-                      cx={expandedGeometry.dot.x}
-                      cy={expandedGeometry.dot.y}
-                      r="5"
-                    />
+                    <path className="sparkline-line" d={expandedHistoricalPath} />
+                    {expandedPredictionPath && (
+                      <path className="sparkline-line sparkline-prediction-line" d={expandedPredictionPath} />
+                    )}
+                    {!expandedPredictionPath && expandedGeometry.dot && (
+                      <circle
+                        className={`sparkline-dot${expandedMode === 'live' ? ' live-dot' : ''}`}
+                        cx={expandedGeometry.dot.x}
+                        cy={expandedGeometry.dot.y}
+                        r="5"
+                      />
+                    )}
+                    {expandedPredictionPath && expandedHistoricalDot && (
+                      <circle
+                        className="sparkline-dot"
+                        cx={expandedHistoricalDot.x}
+                        cy={expandedHistoricalDot.y}
+                        r="5"
+                      />
+                    )}
+                    {expandedPredictionPath && expandedPredictionDot && (
+                      <circle
+                        className="sparkline-dot sparkline-prediction-dot"
+                        cx={expandedPredictionDot.x}
+                        cy={expandedPredictionDot.y}
+                        r="5"
+                      />
+                    )}
                     {expandedHoverPoint && (
                       <>
                         <line
@@ -1494,6 +1726,9 @@ function App() {
                   {expandedHoverPoint && expandedTooltipStyle && (
                     <div className="chart-tooltip" style={expandedTooltipStyle}>
                       <span>{formatTimestamp(expandedHoverPoint.time)}</span>
+                      {isHistoricalForecastActive && (
+                        <span>{expandedHoverIsPrediction ? 'Prediction' : 'Historical'}</span>
+                      )}
                       <strong>
                         {formatMetricValue(expandedMetricKey, expandedHoverPoint.value)}{' '}
                         {expandedMetricUnit}
@@ -1505,15 +1740,22 @@ function App() {
                 <div className="expanded-chart-empty">
                   {expandedError
                     ? expandedError
-                    : expandedMetricData
-                      ? `No ${expandedMode === 'live' ? 'live' : 'historical'} data in this timeframe.`
-                      : `Loading ${expandedMode === 'live' ? 'live' : 'historical'} data...`}
+                    : isHistoricalForecastActive
+                      ? expandedForecastMetricData
+                        ? 'No forecast data available for this metric.'
+                        : 'Loading forecast...'
+                      : expandedMetricData
+                        ? `No ${expandedMode === 'live' ? 'live' : 'historical'} data in this timeframe.`
+                        : `Loading ${expandedMode === 'live' ? 'live' : 'historical'} data...`}
                 </div>
               )}
             </div>
 
-            {expandedError && expandedGeometry && (
+            {expandedError && (
               <div className="expanded-error">{expandedError}</div>
+            )}
+            {expandedForecastError && (
+              <div className="expanded-error">{expandedForecastError}</div>
             )}
 
             <div className="expanded-stats">
@@ -1531,7 +1773,7 @@ function App() {
               </div>
               <div>
                 <span>Points</span>
-                <strong>{expandedPoints.length}</strong>
+                <strong>{expandedPointCount}</strong>
               </div>
             </div>
           </section>

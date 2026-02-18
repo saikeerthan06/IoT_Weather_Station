@@ -915,6 +915,37 @@
   color: white;
 }
 
+.timeframe-chip.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.forecast-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.76rem;
+  color: var(--muted);
+  border: 1px solid rgba(120, 150, 180, 0.24);
+  background: rgba(10, 16, 24, 0.8);
+  border-radius: 999px;
+  padding: 6px 10px 6px 12px;
+}
+
+.forecast-select span {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.forecast-select select {
+  border: 1px solid rgba(120, 150, 180, 0.26);
+  border-radius: 999px;
+  background: rgba(7, 12, 20, 0.86);
+  color: var(--text);
+  font-size: 0.76rem;
+  padding: 5px 9px;
+}
+
 .metric-close {
   border: 1px solid rgba(120, 150, 180, 0.24);
   background: rgba(10, 16, 24, 0.8);
@@ -951,6 +982,32 @@
   font-size: 0.85rem;
   letter-spacing: 0.02em;
   text-transform: none;
+}
+
+.forecast-legend {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.forecast-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.forecast-line-solid,
+.forecast-line-dotted {
+  width: 26px;
+  height: 0;
+  border-top: 2px solid var(--accent);
+}
+
+.forecast-line-dotted {
+  border-top-style: dashed;
 }
 
 .expanded-chart-wrap {
@@ -998,6 +1055,15 @@
   fill: var(--accent);
   stroke: rgba(8, 12, 18, 0.95);
   stroke-width: 2.5;
+}
+
+.sparkline-prediction-line {
+  stroke-dasharray: 9 7;
+  stroke-width: 2.7;
+}
+
+.sparkline-prediction-dot {
+  fill: color-mix(in srgb, var(--accent) 75%, white 18%);
 }
 
 .chart-axis {

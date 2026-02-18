@@ -25,6 +25,8 @@ Repository for an IoT Weather Station project.
 - Set `SENSOR_TABLE=sensor_data`
 - Set `HISTORICAL_TABLE=historical_data`
 - Optional: `ROLLUP_ENABLED=true`
+- Forecasts (XGBoost joblib): ensure `python3` can import `joblib`, `pandas`, `numpy`, `xgboost`
+- Optional forecast envs: `FORECAST_MODEL_PATH`, `FORECAST_SCRIPT_PATH`, `FORECAST_PYTHON_BIN`
 
 ## Run (macOS/Linux)
 1. Make the helper script executable.
