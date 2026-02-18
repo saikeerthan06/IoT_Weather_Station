@@ -946,6 +946,23 @@
   padding: 5px 9px;
 }
 
+.metric-gemini-trigger {
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, white 20%);
+  background: color-mix(in srgb, var(--accent) 22%, #0d1620 78%);
+  color: var(--text);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.metric-gemini-trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .metric-close {
   border: 1px solid rgba(120, 150, 180, 0.24);
   background: rgba(10, 16, 24, 0.8);
@@ -982,6 +999,115 @@
   font-size: 0.85rem;
   letter-spacing: 0.02em;
   text-transform: none;
+}
+
+.metric-gemini-popover {
+  position: absolute;
+  top: 96px;
+  right: 24px;
+  width: min(390px, calc(100% - 48px));
+  max-height: min(56vh, 440px);
+  border-radius: 16px;
+  border: 1px solid rgba(120, 150, 180, 0.26);
+  background: linear-gradient(160deg, rgba(16, 24, 34, 0.98), rgba(8, 13, 20, 0.96));
+  box-shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  animation: overview-popup 0.2s ease both;
+}
+
+.metric-gemini-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.metric-gemini-header h4 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.metric-gemini-close {
+  border: 1px solid rgba(120, 150, 180, 0.24);
+  background: rgba(10, 16, 24, 0.8);
+  color: var(--text);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.metric-gemini-body {
+  overflow-y: auto;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 120px;
+}
+
+.metric-gemini-placeholder {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.metric-gemini-markdown {
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.metric-gemini-markdown p {
+  margin: 0 0 0.55rem;
+}
+
+.metric-gemini-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.metric-gemini-markdown ul,
+.metric-gemini-markdown ol {
+  margin: 0 0 0.55rem;
+  padding-left: 1.1rem;
+}
+
+.metric-gemini-markdown strong {
+  color: var(--text);
+}
+
+.metric-gemini-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px;
+}
+
+.metric-gemini-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.metric-gemini-refresh {
+  border: 1px solid rgba(120, 150, 180, 0.24);
+  background: rgba(61, 220, 140, 0.22);
+  color: var(--text);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 6px 11px;
+  cursor: pointer;
+}
+
+.metric-gemini-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .forecast-legend {
@@ -1552,6 +1678,12 @@
     inset: 14px;
   }
 
+  .metric-gemini-popover {
+    top: 90px;
+    right: 14px;
+    width: min(380px, calc(100% - 28px));
+  }
+
   .overview-modal-content {
     grid-template-columns: 1fr;
   }
@@ -1591,6 +1723,13 @@
   .metric-modal-panel {
     inset: 10px;
     padding: 16px;
+  }
+
+  .metric-gemini-popover {
+    top: 138px;
+    right: 10px;
+    width: calc(100% - 20px);
+    max-height: 44vh;
   }
 
   .overview-modal-panel {

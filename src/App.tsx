@@ -1,5 +1,5 @@
 import './App.css'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -42,9 +42,43 @@ type ForecastApiResponse = {
   metrics: Record<MetricId, ForecastMetricSeries>
 }
 
+type HistoricalInsightRequestPayload = {
+  metric: {
+    id: MetricId
+    label: string
+    unit: string
+  }
+  window: {
+    timeframe: HistoricalTimeframe
+    forecastMode: ForecastMode
+  }
+  location: string
+  historical: {
+    pointCount: number
+    points: MetricPoint[]
+    summary: TrendSummary
+  }
+  prediction: {
+    pointCount: number
+    points: MetricPoint[]
+    summary: TrendSummary
+  }
+}
+
 type GeminiMessage = {
   role: 'user' | 'assistant'
   text: string
+}
+
+type TrendSummary = {
+  startTime: string | null
+  endTime: string | null
+  startValue: number | null
+  endValue: number | null
+  change: number | null
+  average: number | null
+  min: number | null
+  max: number | null
 }
 
 type ChartGeometry = {
@@ -361,6 +395,48 @@ const buildLinePathFromChartPoints = (points: Array<{ x: number; y: number }>) =
     .join(' ')
 }
 
+const summarizeTrendPoints = (points: MetricPoint[]): TrendSummary => {
+  if (points.length === 0) {
+    return {
+      startTime: null,
+      endTime: null,
+      startValue: null,
+      endValue: null,
+      change: null,
+      average: null,
+      min: null,
+      max: null,
+    }
+  }
+
+  let min = Number.POSITIVE_INFINITY
+  let max = Number.NEGATIVE_INFINITY
+  let total = 0
+
+  for (const point of points) {
+    if (point.value < min) min = point.value
+    if (point.value > max) max = point.value
+    total += point.value
+  }
+
+  const first = points[0]
+  const last = points[points.length - 1]
+
+  return {
+    startTime: first?.time ?? null,
+    endTime: last?.time ?? null,
+    startValue: first?.value ?? null,
+    endValue: last?.value ?? null,
+    change:
+      first && last && Number.isFinite(first.value) && Number.isFinite(last.value)
+        ? last.value - first.value
+        : null,
+    average: total / points.length,
+    min: Number.isFinite(min) ? min : null,
+    max: Number.isFinite(max) ? max : null,
+  }
+}
+
 const formatTimestamp = (iso: string) =>
   new Date(iso).toLocaleString([], {
     month: 'short',
@@ -459,6 +535,11 @@ function App() {
   const [isForecastLoading, setIsForecastLoading] = useState(false)
   const [expandedForecastError, setExpandedForecastError] = useState<string | null>(null)
   const [expandedHoverIndex, setExpandedHoverIndex] = useState<number | null>(null)
+  const [historicalGeminiOpen, setHistoricalGeminiOpen] = useState(false)
+  const [historicalGeminiText, setHistoricalGeminiText] = useState('')
+  const [historicalGeminiError, setHistoricalGeminiError] = useState<string | null>(null)
+  const [isHistoricalGeminiStreaming, setIsHistoricalGeminiStreaming] = useState(false)
+  const historicalGeminiAbortRef = useRef<AbortController | null>(null)
 
   const [geminiOpen, setGeminiOpen] = useState(false)
   const [messages, setMessages] = useState<GeminiMessage[]>([defaultGreeting])
@@ -676,6 +757,11 @@ function App() {
 
   const openExpandedMetric = useCallback(
     (metricId: MetricId, mode: 'live' | 'historical') => {
+      if (historicalGeminiAbortRef.current) {
+        historicalGeminiAbortRef.current.abort()
+        historicalGeminiAbortRef.current = null
+      }
+      setIsHistoricalGeminiStreaming(false)
       setExpandedMetric(metricId)
       setExpandedMode(mode)
       setExpandedTimeframe(mode === 'historical' ? '3d' : '12h')
@@ -683,6 +769,9 @@ function App() {
       setExpandedForecastMetrics(null)
       setExpandedForecastError(null)
       setExpandedHoverIndex(null)
+      setHistoricalGeminiOpen(false)
+      setHistoricalGeminiText('')
+      setHistoricalGeminiError(null)
       setShowExpandedAxes(false)
       setIsMetricClosing(false)
       setExpandedMetrics(null)
@@ -706,6 +795,12 @@ function App() {
       return
     }
 
+    if (historicalGeminiAbortRef.current) {
+      historicalGeminiAbortRef.current.abort()
+      historicalGeminiAbortRef.current = null
+    }
+    setIsHistoricalGeminiStreaming(false)
+    setHistoricalGeminiOpen(false)
     setIsMetricClosing(true)
   }, [expandedMetric, isMetricClosing])
 
@@ -742,6 +837,21 @@ function App() {
   useEffect(() => {
     setExpandedHoverIndex(null)
   }, [expandedMetric, expandedMode, expandedTimeframe, expandedForecastMode])
+
+  const stopHistoricalGeminiStream = useCallback(() => {
+    const controller = historicalGeminiAbortRef.current
+    if (controller) {
+      controller.abort()
+      historicalGeminiAbortRef.current = null
+    }
+    setIsHistoricalGeminiStreaming(false)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      stopHistoricalGeminiStream()
+    }
+  }, [stopHistoricalGeminiStream])
 
   const latestObservationTime = useMemo(() => {
     if (!snapshotMetrics) {
@@ -1111,6 +1221,138 @@ function App() {
       top: `${(expandedHoverPoint.y / expandedGeometry.height) * 100}%`,
     }
   }, [expandedGeometry, expandedHoverPoint])
+
+  const historicalInsightPayload = useMemo<HistoricalInsightRequestPayload | null>(() => {
+    if (expandedMode !== 'historical') {
+      return null
+    }
+
+    const timeframe = expandedTimeframe as HistoricalTimeframe
+    const historicalSampledPoints = resamplePoints(expandedPoints, 220)
+    const predictionSampledPoints = resamplePoints(expandedPredictionPoints, 140)
+
+    return {
+      metric: {
+        id: expandedMetricKey,
+        label: expandedMetricLabel,
+        unit: expandedMetricUnit,
+      },
+      window: {
+        timeframe,
+        forecastMode: expandedForecastMode,
+      },
+      location: 'Ang Mo Kio',
+      historical: {
+        pointCount: expandedPoints.length,
+        points: historicalSampledPoints,
+        summary: summarizeTrendPoints(expandedPoints),
+      },
+      prediction: {
+        pointCount: expandedPredictionPoints.length,
+        points: predictionSampledPoints,
+        summary: summarizeTrendPoints(expandedPredictionPoints),
+      },
+    }
+  }, [
+    expandedMode,
+    expandedTimeframe,
+    expandedPoints,
+    expandedPredictionPoints,
+    expandedMetricKey,
+    expandedMetricLabel,
+    expandedMetricUnit,
+    expandedForecastMode,
+  ])
+
+  const requestHistoricalGeminiInsight = useCallback(async () => {
+    if (!historicalInsightPayload || isHistoricalGeminiStreaming) {
+      return
+    }
+
+    stopHistoricalGeminiStream()
+
+    const controller = new AbortController()
+    historicalGeminiAbortRef.current = controller
+    setIsHistoricalGeminiStreaming(true)
+    setHistoricalGeminiText('')
+    setHistoricalGeminiError(null)
+
+    try {
+      const response = await fetch('/api/gemini/historical-insights/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(historicalInsightPayload),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(payload?.error ?? 'Gemini historical insight failed.')
+      }
+
+      if (!response.body) {
+        throw new Error('Streaming response is unavailable.')
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let fullText = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          break
+        }
+
+        if (value) {
+          fullText += decoder.decode(value, { stream: true })
+          setHistoricalGeminiText(fullText)
+        }
+      }
+
+      fullText += decoder.decode()
+      if (fullText) {
+        setHistoricalGeminiText(fullText)
+      }
+
+      if (!fullText.trim()) {
+        setHistoricalGeminiError('No insight was returned.')
+      }
+    } catch (streamError) {
+      if (controller.signal.aborted) {
+        return
+      }
+
+      const message =
+        streamError instanceof Error
+          ? streamError.message
+          : 'Gemini historical insight failed.'
+      setHistoricalGeminiError(message)
+    } finally {
+      if (!controller.signal.aborted) {
+        setIsHistoricalGeminiStreaming(false)
+      }
+      if (historicalGeminiAbortRef.current === controller) {
+        historicalGeminiAbortRef.current = null
+      }
+    }
+  }, [
+    historicalInsightPayload,
+    isHistoricalGeminiStreaming,
+    stopHistoricalGeminiStream,
+  ])
+
+  const openHistoricalGeminiPopup = useCallback(() => {
+    setHistoricalGeminiOpen(true)
+    void requestHistoricalGeminiInsight()
+  }, [requestHistoricalGeminiInsight])
+
+  const closeHistoricalGeminiPopup = useCallback(() => {
+    stopHistoricalGeminiStream()
+    setHistoricalGeminiOpen(false)
+    setHistoricalGeminiText('')
+    setHistoricalGeminiError(null)
+  }, [stopHistoricalGeminiStream])
 
   const startNewConversation = () => {
     setMessages([defaultGreeting])
@@ -1541,6 +1783,16 @@ function App() {
                     </select>
                   </label>
                 )}
+                {expandedMode === 'historical' && (
+                  <button
+                    type="button"
+                    className="metric-gemini-trigger"
+                    onClick={openHistoricalGeminiPopup}
+                    disabled={isHistoricalGeminiStreaming || expandedPoints.length === 0}
+                  >
+                    {isHistoricalGeminiStreaming ? 'Gemini...' : 'Use Gemini'}
+                  </button>
+                )}
                 <label className="axis-toggle">
                   <input
                     type="checkbox"
@@ -1558,6 +1810,60 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {expandedMode === 'historical' && historicalGeminiOpen && (
+              <aside className="metric-gemini-popover" aria-live="polite">
+                <div className="metric-gemini-header">
+                  <div>
+                    <p className="eyebrow">Gemini Insight</p>
+                    <h4>{expandedMetricLabel} Trend</h4>
+                  </div>
+                  <button
+                    type="button"
+                    className="metric-gemini-close"
+                    onClick={closeHistoricalGeminiPopup}
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="metric-gemini-body">
+                  {!historicalGeminiText && !historicalGeminiError && (
+                    <p className="metric-gemini-placeholder">
+                      Analyzing the currently visible dashboard trend...
+                    </p>
+                  )}
+                  {historicalGeminiText && (
+                    <div className="metric-gemini-markdown">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {historicalGeminiText}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                  {isHistoricalGeminiStreaming && (
+                    <div className="metric-gemini-typing">
+                      <span className="typing-dot" />
+                      <span className="typing-dot" />
+                      <span className="typing-dot" />
+                    </div>
+                  )}
+                  {historicalGeminiError && (
+                    <div className="gemini-error">{historicalGeminiError}</div>
+                  )}
+                </div>
+                <div className="metric-gemini-footer">
+                  <button
+                    type="button"
+                    className="metric-gemini-refresh"
+                    onClick={() => {
+                      void requestHistoricalGeminiInsight()
+                    }}
+                    disabled={isHistoricalGeminiStreaming || expandedPoints.length === 0}
+                  >
+                    Regenerate
+                  </button>
+                </div>
+              </aside>
+            )}
 
             <div className="metric-modal-value">
               {formatMetricValue(
