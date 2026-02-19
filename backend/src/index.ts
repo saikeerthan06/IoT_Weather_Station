@@ -2,7 +2,7 @@ import 'dotenv/config'
 import cors from 'cors'
 import express from 'express'
 import { scheduleDailyRollup } from './jobs/rollup.js'
-import { geminiRouter } from './routes/gemini.js'
+// import { geminiRouter } from './routes/gemini.js'
 import { historyRouter } from './routes/history.js'
 import { liveRouter } from './routes/live.js'
 import { startLiveDatagovPolling } from './services/liveDatagov.js'
@@ -16,7 +16,7 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true })
 })
 
-app.use('/api/gemini', geminiRouter)
+// app.use('/api/gemini', geminiRouter)
 app.use('/api/history', historyRouter)
 app.use('/api/live', liveRouter)
 

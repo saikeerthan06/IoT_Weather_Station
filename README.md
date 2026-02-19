@@ -15,15 +15,7 @@ Repository for an IoT Weather Station project.
 - Windows (PowerShell): `Copy-Item backend\.env.example backend\.env`
 - Windows (CMD): `copy backend\.env.example backend\.env`
 
-2. Add your Gemini key.
-- Open `backend/.env`
-- Set `GEMINI_API_KEY=your_key_here`
-- Optional Gemini resilience tuning:
-  - `GEMINI_MODEL_CANDIDATES` (fallback order, comma-separated)
-  - `GEMINI_RETRIES_PER_MODEL` (default `2`)
-  - `GEMINI_RETRY_BASE_MS` / `GEMINI_RETRY_MAX_MS` (backoff timing)
-
-3. Configure Postgres access (SSH tunnel on your Mac recommended).
+2. Configure Postgres access (SSH tunnel on your Mac recommended).
 - Open `backend/.env`
 - Set `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`
 - Set `SENSOR_TABLE=sensor_data`
@@ -56,7 +48,6 @@ Repository for an IoT Weather Station project.
 - Look for the Vite URL like `http://localhost:5173/`
 
 ## Notes
-- The UI requires a valid Gemini API key.
 - The backend default port is `5050`.
 
 

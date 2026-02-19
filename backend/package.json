@@ -9,11 +9,9 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@google/genai": "latest",
     "cors": "latest",
     "dotenv": "latest",
     "express": "latest",
-    "mime": "latest",
     "pg": "^8.13.1"
   },
   "devDependencies": {

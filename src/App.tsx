@@ -206,6 +206,7 @@ const HISTORICAL_POLL_MS = 15 * 60_000
 const SNAPSHOT_WINDOW: LiveTimeframe = '12h'
 const HISTORICAL_WINDOW: HistoricalWindow = '3d'
 const OVERVIEW_RAIN_WINDOW_MS = 60 * 60 * 1000
+const GEMINI_UI_ENABLED = false
 
 const accentStyle = (accent: string): CSSProperties =>
   ({
@@ -2323,7 +2324,7 @@ function App() {
                     </select>
                   </label>
                 )}
-                {expandedMode === 'historical' && (
+                {GEMINI_UI_ENABLED && expandedMode === 'historical' && (
                   <button
                     type="button"
                     className="metric-gemini-trigger"
@@ -2375,7 +2376,7 @@ function App() {
               </div>
             </div>
 
-            {expandedMode === 'historical' && historicalGeminiOpen && (
+            {GEMINI_UI_ENABLED && expandedMode === 'historical' && historicalGeminiOpen && (
               <aside className="metric-gemini-popover" aria-live="polite">
                 <div className="metric-gemini-header">
                   <div>
@@ -2777,95 +2778,99 @@ function App() {
         </div>
       )}
 
-      <button
-        className="gemini-fab"
-        type="button"
-        onClick={() => {
-          if (geminiOpen) {
-            startNewConversation()
-          } else {
-            setGeminiOpen(true)
-          }
-        }}
-        aria-expanded={geminiOpen}
-        aria-controls="gemini-panel"
-      >
-        {geminiOpen ? 'New conversation' : 'Gemini'}
-      </button>
-
-      <aside
-        id="gemini-panel"
-        className={`gemini-panel ${geminiOpen ? 'open' : ''}`}
-        aria-hidden={!geminiOpen}
-      >
-        <div className="gemini-header">
-          <div>
-            <p className="eyebrow">Ask Gemini</p>
-            <h3>Quick Chat</h3>
-          </div>
+      {GEMINI_UI_ENABLED && (
+        <>
           <button
-            className="gemini-close"
+            className="gemini-fab"
             type="button"
-            onClick={() => setGeminiOpen(false)}
-            aria-label="Close Gemini panel"
-          >
-            Close
-          </button>
-        </div>
-
-        <div className="gemini-messages" aria-live="polite">
-          {messages.map((message, index) => (
-            <div
-              key={`${message.role}-${index}`}
-              className={`gemini-message ${message.role}`}
-            >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.text}
-              </ReactMarkdown>
-            </div>
-          ))}
-          {isSending && (
-            <div className="gemini-message assistant gemini-typing">
-              <span className="typing-dot" />
-              <span className="typing-dot" />
-              <span className="typing-dot" />
-            </div>
-          )}
-        </div>
-
-        {error && <div className="gemini-error">{error}</div>}
-
-        <form
-          className="gemini-input"
-          onSubmit={(event) => {
-            event.preventDefault()
-            void sendToGemini()
-          }}
-        >
-          <textarea
-            rows={2}
-            placeholder="Ask Gemini anything..."
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter' || event.shiftKey) {
-                return
-              }
-              if (event.nativeEvent.isComposing) {
-                return
-              }
-              event.preventDefault()
-              if (!isSending) {
-                void sendToGemini()
+            onClick={() => {
+              if (geminiOpen) {
+                startNewConversation()
+              } else {
+                setGeminiOpen(true)
               }
             }}
-            disabled={isSending}
-          />
-          <button type="submit" disabled={isSending || !input.trim()}>
-            {isSending ? 'Sending...' : 'Send'}
+            aria-expanded={geminiOpen}
+            aria-controls="gemini-panel"
+          >
+            {geminiOpen ? 'New conversation' : 'Gemini'}
           </button>
-        </form>
-      </aside>
+
+          <aside
+            id="gemini-panel"
+            className={`gemini-panel ${geminiOpen ? 'open' : ''}`}
+            aria-hidden={!geminiOpen}
+          >
+            <div className="gemini-header">
+              <div>
+                <p className="eyebrow">Ask Gemini</p>
+                <h3>Quick Chat</h3>
+              </div>
+              <button
+                className="gemini-close"
+                type="button"
+                onClick={() => setGeminiOpen(false)}
+                aria-label="Close Gemini panel"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="gemini-messages" aria-live="polite">
+              {messages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  className={`gemini-message ${message.role}`}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {message.text}
+                  </ReactMarkdown>
+                </div>
+              ))}
+              {isSending && (
+                <div className="gemini-message assistant gemini-typing">
+                  <span className="typing-dot" />
+                  <span className="typing-dot" />
+                  <span className="typing-dot" />
+                </div>
+              )}
+            </div>
+
+            {error && <div className="gemini-error">{error}</div>}
+
+            <form
+              className="gemini-input"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void sendToGemini()
+              }}
+            >
+              <textarea
+                rows={2}
+                placeholder="Ask Gemini anything..."
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' || event.shiftKey) {
+                    return
+                  }
+                  if (event.nativeEvent.isComposing) {
+                    return
+                  }
+                  event.preventDefault()
+                  if (!isSending) {
+                    void sendToGemini()
+                  }
+                }}
+                disabled={isSending}
+              />
+              <button type="submit" disabled={isSending || !input.trim()}>
+                {isSending ? 'Sending...' : 'Send'}
+              </button>
+            </form>
+          </aside>
+        </>
+      )}
     </div>
   )
 }
