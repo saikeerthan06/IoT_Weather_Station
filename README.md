@@ -18,6 +18,10 @@ Repository for an IoT Weather Station project.
 2. Add your Gemini key.
 - Open `backend/.env`
 - Set `GEMINI_API_KEY=your_key_here`
+- Optional Gemini resilience tuning:
+  - `GEMINI_MODEL_CANDIDATES` (fallback order, comma-separated)
+  - `GEMINI_RETRIES_PER_MODEL` (default `2`)
+  - `GEMINI_RETRY_BASE_MS` / `GEMINI_RETRY_MAX_MS` (backoff timing)
 
 3. Configure Postgres access (SSH tunnel on your Mac recommended).
 - Open `backend/.env`
@@ -27,6 +31,8 @@ Repository for an IoT Weather Station project.
 - Optional: `ROLLUP_ENABLED=true`
 - Forecasts (XGBoost joblib): ensure `python3` can import `joblib`, `pandas`, `numpy`, `xgboost`
 - Optional forecast envs: `FORECAST_MODEL_PATH`, `FORECAST_SCRIPT_PATH`, `FORECAST_PYTHON_BIN`
+- data.gov live feed (rainfall + wind): set `DATAGOV_STATION_ID` (default `S109`); backend polling is fixed at 5 minutes to avoid rate limits
+- Optional data.gov envs: `DATAGOV_SCRIPT_PATH`, `DATAGOV_PYTHON_BIN`, `DATAGOV_TIMEOUT_SECONDS`, `DATAGOV_HISTORY_HOURS`, `DATAGOV_API_KEY`
 
 ## Run (macOS/Linux)
 1. Make the helper script executable.

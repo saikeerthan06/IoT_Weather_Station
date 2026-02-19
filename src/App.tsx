@@ -4,7 +4,8 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-type MetricId = 'temperature' | 'humidity' | 'pressure'
+type HistoricalMetricId = 'temperature' | 'humidity' | 'pressure'
+type MetricId = HistoricalMetricId | 'rainfall'
 type LiveTimeframe = '1h' | '2h' | '6h' | '10h' | '12h'
 type HistoricalTimeframe = 'all' | '1d' | '3d'
 type ExpandedTimeframe = LiveTimeframe | HistoricalTimeframe
@@ -33,13 +34,55 @@ type ForecastMetricSeries = MetricSeries & {
   predictionPoints: MetricPoint[]
 }
 
-type MetricsApiResponse = {
-  metrics: Record<MetricId, MetricSeries>
+type MetricsRecord = Partial<Record<MetricId, MetricSeries>>
+type LiveMetricsRecord = Record<MetricId, MetricSeries>
+type HistoricalMetricsRecord = Record<HistoricalMetricId, MetricSeries>
+
+type WindSnapshot = {
+  speed: number | null
+  speedUnit: string
+  direction: number | null
+  directionUnit: string
+  cardinal: string | null
+  timestamp: string | null
+  stationId: string | null
+  available: boolean
+}
+
+type LiveMetricsApiResponse = {
+  metrics: LiveMetricsRecord
+  wind?: WindSnapshot
+}
+
+type HistoricalMetricsApiResponse = {
+  metrics: HistoricalMetricsRecord
+}
+
+type ExpandedMetricsApiResponse = {
+  metrics: MetricsRecord
 }
 
 type ForecastApiResponse = {
+  mode: Exclude<ForecastMode, 'off'>
+  historyWindow: 'today' | 'all'
+  source?: {
+    historicalTable?: string
+    sensorTable?: string
+    modelPath?: string
+  }
+  generatedAt?: string
   warning?: string | null
-  metrics: Record<MetricId, ForecastMetricSeries>
+  metrics: Record<HistoricalMetricId, ForecastMetricSeries>
+}
+
+type HistoricalInsightForecastContext = {
+  enabled: boolean
+  modelFamily: 'xgboost'
+  mode: ForecastMode
+  modelPath: string | null
+  generatedAt: string | null
+  warning: string | null
+  predictionPointCount: number
 }
 
 type HistoricalInsightRequestPayload = {
@@ -62,6 +105,11 @@ type HistoricalInsightRequestPayload = {
     pointCount: number
     points: MetricPoint[]
     summary: TrendSummary
+  }
+  assistantContext: {
+    role: 'weather-station-operator-assistant'
+    chartType: 'time-series'
+    forecast: HistoricalInsightForecastContext
   }
 }
 
@@ -95,7 +143,7 @@ type ChartGeometry = {
 
 type OverviewStatus = 'Optimal' | 'Good' | 'Watch' | 'Alert'
 
-const metricOrder: MetricId[] = ['temperature', 'humidity', 'pressure']
+const metricOrder: HistoricalMetricId[] = ['temperature', 'humidity', 'pressure']
 
 const metricStyleConfig: Record<
   MetricId,
@@ -115,6 +163,11 @@ const metricStyleConfig: Record<
     accent: 'teal',
     fallbackUnit: 'hPa',
     defaultLabel: 'Pressure',
+  },
+  rainfall: {
+    accent: 'cyan',
+    fallbackUnit: 'mm',
+    defaultLabel: 'Rainfall',
   },
 }
 
@@ -152,8 +205,7 @@ const LIVE_MODAL_POLL_MS = 10_000
 const HISTORICAL_POLL_MS = 15 * 60_000
 const SNAPSHOT_WINDOW: LiveTimeframe = '12h'
 const HISTORICAL_WINDOW: HistoricalWindow = '3d'
-const PRESSURE_GAUGE_MIN = 980
-const PRESSURE_GAUGE_MAX = 1040
+const OVERVIEW_RAIN_WINDOW_MS = 60 * 60 * 1000
 
 const accentStyle = (accent: string): CSSProperties =>
   ({
@@ -177,7 +229,7 @@ const formatMetricValue = (metricId: MetricId, value: number | null) => {
     return '--'
   }
 
-  if (metricId === 'pressure') {
+  if (metricId === 'pressure' || metricId === 'rainfall') {
     const truncated = Math.trunc(value * 100) / 100
     return truncated.toFixed(2)
   }
@@ -195,10 +247,10 @@ const formatMetricDelta = (metricId: MetricId, delta: number | null) => {
   }
 
   if (delta === 0) {
-    return metricId === 'pressure' ? '0.00' : '0'
+    return metricId === 'pressure' || metricId === 'rainfall' ? '0.00' : '0'
   }
 
-  if (metricId === 'pressure') {
+  if (metricId === 'pressure' || metricId === 'rainfall') {
     const truncated = Math.trunc(delta * 100) / 100
     return `${truncated > 0 ? '+' : ''}${truncated.toFixed(2)}`
   }
@@ -237,6 +289,13 @@ const metricNote = (metricId: MetricId, value: number | null) => {
     return 'Dry'
   }
 
+  if (metricId === 'rainfall') {
+    if (value >= 15) return 'Heavy rain'
+    if (value >= 5) return 'Steady rain'
+    if (value > 0) return 'Light rain'
+    return 'Dry spell'
+  }
+
   if (value >= 1025) return 'High pressure'
   if (value >= 1012) return 'Stable'
   if (value >= 1000) return 'Low'
@@ -269,7 +328,7 @@ const rangeLabel = (
     return `${Math.round(min)}-${Math.round(max)} ${unit}`
   }
 
-  if (metricId === 'pressure') {
+  if (metricId === 'pressure' || metricId === 'rainfall') {
     const minTrunc = Math.trunc(min * 100) / 100
     const maxTrunc = Math.trunc(max * 100) / 100
     return `${minTrunc.toFixed(2)}-${maxTrunc.toFixed(2)} ${unit}`
@@ -469,6 +528,82 @@ const formatForecastHour = (iso: string) =>
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value))
 
+const weightedAverage = (parts: Array<{ value: number | null; weight: number }>) => {
+  let weightedTotal = 0
+  let totalWeight = 0
+
+  for (const part of parts) {
+    if (part.value === null || Number.isNaN(part.value) || part.weight <= 0) {
+      continue
+    }
+
+    weightedTotal += part.value * part.weight
+    totalWeight += part.weight
+  }
+
+  if (totalWeight === 0) {
+    return null
+  }
+
+  return weightedTotal / totalWeight
+}
+
+const maxRecentValue = (points: MetricPoint[], windowMs: number) => {
+  if (points.length === 0) {
+    return null
+  }
+
+  const latestMs = Date.parse(points[points.length - 1].time)
+  if (!Number.isFinite(latestMs)) {
+    return null
+  }
+
+  const thresholdMs = latestMs - windowMs
+  let max = Number.NEGATIVE_INFINITY
+
+  for (const point of points) {
+    const pointMs = Date.parse(point.time)
+    if (!Number.isFinite(pointMs) || pointMs < thresholdMs) {
+      continue
+    }
+
+    if (point.value > max) {
+      max = point.value
+    }
+  }
+
+  if (!Number.isFinite(max)) {
+    return null
+  }
+
+  return max
+}
+
+const rainScoreFromMm = (mm: number | null) => {
+  if (mm === null || Number.isNaN(mm)) {
+    return null
+  }
+
+  if (mm <= 0) return 100
+  if (mm <= 2) return 85
+  if (mm <= 10) return 60
+  if (mm <= 20) return 35
+  return 10
+}
+
+const windScoreFromKnots = (knots: number | null) => {
+  if (knots === null || Number.isNaN(knots)) {
+    return null
+  }
+
+  if (knots <= 4) return 90
+  if (knots <= 8) return 100
+  if (knots <= 12) return 92
+  if (knots <= 18) return 70
+  if (knots <= 25) return 45
+  return 20
+}
+
 const averageDelta = (points: MetricPoint[], windowSize: number) => {
   if (points.length < 2) {
     return null
@@ -521,17 +656,12 @@ const statusChipClass = (status: OverviewStatus) => {
 
 function App() {
   const [localTime, setLocalTime] = useState(() => formatLocalTime(new Date()))
-  const [snapshotMetrics, setSnapshotMetrics] = useState<
-    Record<MetricId, MetricSeries> | null
-  >(null)
+  const [snapshotMetrics, setSnapshotMetrics] = useState<LiveMetricsRecord | null>(null)
+  const [windSnapshot, setWindSnapshot] = useState<WindSnapshot | null>(null)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
-  const [historicalMetrics, setHistoricalMetrics] = useState<
-    Record<MetricId, MetricSeries> | null
-  >(null)
+  const [historicalMetrics, setHistoricalMetrics] = useState<HistoricalMetricsRecord | null>(null)
   const [historicalError, setHistoricalError] = useState<string | null>(null)
-  const [expandedMetrics, setExpandedMetrics] = useState<
-    Record<MetricId, MetricSeries> | null
-  >(null)
+  const [expandedMetrics, setExpandedMetrics] = useState<MetricsRecord | null>(null)
   const [expandedError, setExpandedError] = useState<string | null>(null)
   const [isOverviewModalOpen, setIsOverviewModalOpen] = useState(false)
   const [isOverviewFormulaOpen, setIsOverviewFormulaOpen] = useState(false)
@@ -543,8 +673,10 @@ function App() {
   const [expandedTimeframe, setExpandedTimeframe] = useState<ExpandedTimeframe>('12h')
   const [expandedForecastMode, setExpandedForecastMode] = useState<ForecastMode>('off')
   const [expandedForecastMetrics, setExpandedForecastMetrics] = useState<
-    Record<MetricId, ForecastMetricSeries> | null
+    Record<HistoricalMetricId, ForecastMetricSeries> | null
   >(null)
+  const [expandedForecastContext, setExpandedForecastContext] =
+    useState<HistoricalInsightForecastContext | null>(null)
   const [isForecastLoading, setIsForecastLoading] = useState(false)
   const [expandedForecastError, setExpandedForecastError] = useState<string | null>(null)
   const [expandedHoverIndex, setExpandedHoverIndex] = useState<number | null>(null)
@@ -584,8 +716,9 @@ function App() {
           throw new Error('Failed to load live metrics.')
         }
 
-        const payload = (await response.json()) as MetricsApiResponse
+        const payload = (await response.json()) as LiveMetricsApiResponse
         setSnapshotMetrics(payload.metrics)
+        setWindSnapshot(payload.wind ?? null)
         setSnapshotError(null)
       } catch (loadError) {
         if (controller.signal.aborted) {
@@ -620,7 +753,7 @@ function App() {
           throw new Error('Failed to load historical metrics.')
         }
 
-        const payload = (await response.json()) as MetricsApiResponse
+        const payload = (await response.json()) as HistoricalMetricsApiResponse
         setHistoricalMetrics(payload.metrics)
         setHistoricalError(null)
       } catch (loadError) {
@@ -677,7 +810,7 @@ function App() {
           )
         }
 
-        const payload = (await response.json()) as MetricsApiResponse
+        const payload = (await response.json()) as ExpandedMetricsApiResponse
         setExpandedMetrics(payload.metrics)
         setExpandedError(null)
       } catch (loadError) {
@@ -710,6 +843,7 @@ function App() {
   useEffect(() => {
     if (expandedMode !== 'historical' || expandedForecastMode === 'off' || !expandedMetric) {
       setExpandedForecastMetrics(null)
+      setExpandedForecastContext(null)
       setIsForecastLoading(false)
       setExpandedForecastError(null)
       return
@@ -731,6 +865,20 @@ function App() {
 
         const payload = (await response.json()) as ForecastApiResponse
         setExpandedForecastMetrics(payload.metrics)
+        setExpandedForecastContext({
+          enabled: true,
+          modelFamily: 'xgboost',
+          mode: requestedMode,
+          modelPath: payload.source?.modelPath?.trim() || null,
+          generatedAt: payload.generatedAt ? String(payload.generatedAt) : null,
+          warning: payload.warning ? String(payload.warning) : null,
+          predictionPointCount:
+            expandedMetric === 'temperature'
+              ? payload.metrics.temperature.predictionPoints.length
+              : expandedMetric === 'humidity'
+                ? payload.metrics.humidity.predictionPoints.length
+                : payload.metrics.pressure.predictionPoints.length,
+        })
         setExpandedForecastError(
           payload.warning ? String(payload.warning) : null,
         )
@@ -742,6 +890,7 @@ function App() {
         const message =
           loadError instanceof Error ? loadError.message : 'Failed to load forecast.'
         setExpandedForecastMetrics(null)
+        setExpandedForecastContext(null)
         setExpandedForecastError(message)
       } finally {
         if (!controller.signal.aborted) {
@@ -783,6 +932,7 @@ function App() {
       setExpandedTimeframe(mode === 'historical' ? '3d' : '12h')
       setExpandedForecastMode('off')
       setExpandedForecastMetrics(null)
+      setExpandedForecastContext(null)
       setExpandedForecastError(null)
       setExpandedHoverIndex(null)
       setIsPredictionFocusActive(false)
@@ -891,57 +1041,84 @@ function App() {
     const temp = snapshotMetrics?.temperature.latest ?? null
     const humi = snapshotMetrics?.humidity.latest ?? null
     const pres = snapshotMetrics?.pressure.latest ?? null
+    const rainfallPoints = snapshotMetrics?.rainfall.points ?? []
+    const rainfallRecent = maxRecentValue(rainfallPoints, OVERVIEW_RAIN_WINDOW_MS)
+    const windSpeed = windSnapshot?.speed ?? null
 
-    if (temp === null || humi === null || pres === null) {
+    const temperatureComfort =
+      temp === null || Number.isNaN(temp) ? null : clamp(100 - Math.abs(temp - 27) * 6, 0, 100)
+    const humidityComfort =
+      humi === null || Number.isNaN(humi) ? null : clamp(100 - Math.abs(humi - 55) * 2, 0, 100)
+    const comfortScore = weightedAverage([
+      { value: temperatureComfort, weight: 0.6 },
+      { value: humidityComfort, weight: 0.4 },
+    ])
+
+    const pressureScore =
+      pres === null || Number.isNaN(pres) ? null : clamp(100 - Math.abs(pres - 1013) * 1.5, 0, 100)
+
+    const temperaturePoints = snapshotMetrics?.temperature.points ?? []
+    const humidityPoints = snapshotMetrics?.humidity.points ?? []
+    const pressurePoints = snapshotMetrics?.pressure.points ?? []
+
+    const tempStability =
+      temperaturePoints.length < 2
+        ? null
+        : stabilityFromDelta(averageDelta(temperaturePoints, 12), 0.35)
+    const humiStability =
+      humidityPoints.length < 2
+        ? null
+        : stabilityFromDelta(averageDelta(humidityPoints, 12), 1.2)
+    const pressureStability =
+      pressurePoints.length < 2
+        ? null
+        : stabilityFromDelta(averageDelta(pressurePoints, 12), 0.6)
+    const stabilityScore = weightedAverage([
+      { value: tempStability, weight: 0.45 },
+      { value: humiStability, weight: 0.35 },
+      { value: pressureStability, weight: 0.2 },
+    ])
+
+    const rainScore = rainScoreFromMm(rainfallRecent)
+    const windScore = windScoreFromKnots(windSpeed)
+
+    const compositeScore = weightedAverage([
+      { value: comfortScore, weight: 0.4 },
+      { value: pressureScore, weight: 0.15 },
+      { value: stabilityScore, weight: 0.2 },
+      { value: rainScore, weight: 0.15 },
+      { value: windScore, weight: 0.1 },
+    ])
+
+    if (compositeScore === null) {
       return {
         score: null as number | null,
         status: null as OverviewStatus | null,
         chipClass: 'chip',
+        rainfallRecent: null as number | null,
+        rainScore: null as number | null,
+        windScore: null as number | null,
       }
     }
 
-    const temperatureComfort = clamp(100 - Math.abs(temp - 27) * 6, 0, 100)
-    const humidityComfort = clamp(100 - Math.abs(humi - 55) * 2, 0, 100)
-    const comfortScore = 0.6 * temperatureComfort + 0.4 * humidityComfort
-
-    const pressureScore = clamp(100 - Math.abs(pres - 1013) * 1.5, 0, 100)
-
-    const tempStability = stabilityFromDelta(
-      averageDelta(snapshotMetrics?.temperature.points ?? [], 12),
-      0.35,
-    )
-    const humiStability = stabilityFromDelta(
-      averageDelta(snapshotMetrics?.humidity.points ?? [], 12),
-      1.2,
-    )
-    const pressureStability = stabilityFromDelta(
-      averageDelta(snapshotMetrics?.pressure.points ?? [], 12),
-      0.6,
-    )
-    const stabilityScore =
-      0.45 * tempStability + 0.35 * humiStability + 0.2 * pressureStability
-
-    const score = Math.round(
-      clamp(
-        0.55 * comfortScore + 0.25 * pressureScore + 0.2 * stabilityScore,
-        0,
-        100,
-      ),
-    )
-
+    const score = Math.round(clamp(compositeScore, 0, 100))
     const status = mapScoreToStatus(score)
 
     return {
       score,
       status,
       chipClass: `chip ${statusChipClass(status)}`,
+      rainfallRecent,
+      rainScore,
+      windScore,
     }
-  }, [snapshotMetrics])
+  }, [snapshotMetrics, windSnapshot])
 
   const quickMetrics = useMemo(() => {
     const temperature = snapshotMetrics?.temperature ?? null
     const humidity = snapshotMetrics?.humidity ?? null
     const pressure = snapshotMetrics?.pressure ?? null
+    const rainfall = snapshotMetrics?.rainfall ?? null
 
     return [
       {
@@ -974,6 +1151,16 @@ function App() {
         accent: metricStyleConfig.pressure.accent,
         bar: normalizeMeterValue(pressure),
       },
+      {
+        metricId: 'rainfall' as const,
+        label: 'Rainfall',
+        value: formatMetricValue('rainfall', rainfall?.latest ?? null),
+        unit: rainfall?.unit ?? metricStyleConfig.rainfall.fallbackUnit,
+        delta: formatMetricDelta('rainfall', rainfall?.delta ?? null),
+        note: metricNote('rainfall', rainfall?.latest ?? null),
+        accent: metricStyleConfig.rainfall.accent,
+        bar: normalizeMeterValue(rainfall),
+      },
     ]
   }, [snapshotMetrics])
 
@@ -994,8 +1181,29 @@ function App() {
         value: formatMetricValue('pressure', snapshotMetrics?.pressure.latest ?? null),
         unit: metricStyleConfig.pressure.fallbackUnit,
       },
+      {
+        label: 'Rainfall (last 1h max)',
+        value: formatMetricValue('rainfall', weatherOverview.rainfallRecent ?? null),
+        unit: metricStyleConfig.rainfall.fallbackUnit,
+      },
+      {
+        label: 'Rain Score',
+        value:
+          weatherOverview.rainScore === null || Number.isNaN(weatherOverview.rainScore)
+            ? '--'
+            : String(Math.round(weatherOverview.rainScore)),
+        unit: '/100',
+      },
+      {
+        label: 'Wind Score',
+        value:
+          weatherOverview.windScore === null || Number.isNaN(weatherOverview.windScore)
+            ? '--'
+            : String(Math.round(weatherOverview.windScore)),
+        unit: '/100',
+      },
     ],
-    [snapshotMetrics],
+    [snapshotMetrics, weatherOverview.rainfallRecent, weatherOverview.rainScore, weatherOverview.windScore],
   )
 
   const trendCards = useMemo(() => {
@@ -1022,29 +1230,91 @@ function App() {
     })
   }, [historicalMetrics])
 
-  const pressureNow = historicalMetrics?.pressure.latest ?? null
-  const gaugeNeedleStyle: CSSProperties = useMemo(() => {
-    if (pressureNow === null || Number.isNaN(pressureNow)) {
-      return { '--needle-rotation': '0deg' } as CSSProperties
+  const windDirectionNow = windSnapshot?.direction ?? null
+  const windCompassStyle: CSSProperties = useMemo(() => {
+    if (windDirectionNow === null || Number.isNaN(windDirectionNow)) {
+      return { '--wind-angle': '0deg' } as CSSProperties
     }
 
-    const normalized = Math.max(
-      0,
-      Math.min(1, (pressureNow - PRESSURE_GAUGE_MIN) / (PRESSURE_GAUGE_MAX - PRESSURE_GAUGE_MIN)),
-    )
-    const rotation = -80 + normalized * 160
-    return { '--needle-rotation': `${rotation}deg` } as CSSProperties
-  }, [pressureNow])
+    const normalized = ((windDirectionNow % 360) + 360) % 360
+    return { '--wind-angle': `${normalized}deg` } as CSSProperties
+  }, [windDirectionNow])
+  const windSpeedValue =
+    windSnapshot?.speed === null ||
+    windSnapshot?.speed === undefined ||
+    Number.isNaN(windSnapshot.speed)
+      ? '--'
+      : windSnapshot.speed.toFixed(1)
+  const windSpeedUnit = windSnapshot?.speedUnit ?? 'knots'
+  const windDirectionLabel = windSnapshot?.cardinal ?? '--'
+  const windDirectionDegrees =
+    windDirectionNow === null || Number.isNaN(windDirectionNow)
+      ? null
+      : Math.round(((windDirectionNow % 360) + 360) % 360)
+  const windDirectionDegreesLabel =
+    windDirectionDegrees === null ? '-- deg' : `${windDirectionDegrees} deg`
+  const windDirectionText =
+    windDirectionDegrees === null
+      ? 'Direction unavailable'
+      : `${windDirectionDegreesLabel} (${windDirectionLabel})`
+  const windStationLabel = windSnapshot?.stationId ? `Station ${windSnapshot.stationId}` : 'Station unavailable'
+  const windUpdatedLabel = windSnapshot?.timestamp
+    ? `Updated ${formatTimestamp(windSnapshot.timestamp)}`
+    : 'Waiting for data.gov feed'
+  const windChip = useMemo(() => {
+    if (!windSnapshot?.available) {
+      return {
+        label: 'No feed',
+        className: 'chip',
+      }
+    }
 
-  const expandedFallbackMetrics =
-    expandedMode === 'historical' ? historicalMetrics : snapshotMetrics
+    const speed = windSnapshot.speed
+    if (speed === null || Number.isNaN(speed)) {
+      return {
+        label: 'Directional',
+        className: 'chip chip-good',
+      }
+    }
+
+    if (speed >= 18) {
+      return {
+        label: 'Strong',
+        className: 'chip chip-warn',
+      }
+    }
+
+    if (speed >= 8) {
+      return {
+        label: 'Breezy',
+        className: 'chip chip-good',
+      }
+    }
+
+    return {
+      label: 'Light',
+      className: 'chip chip-good',
+    }
+  }, [windSnapshot])
+
+  const expandedFallbackMetricData =
+    expandedMetric === null
+      ? null
+      : expandedMode === 'historical'
+        ? expandedMetric === 'rainfall'
+          ? null
+          : historicalMetrics?.[expandedMetric] ?? null
+        : snapshotMetrics?.[expandedMetric] ?? null
   const expandedMetricData = expandedMetric
-    ? expandedMetrics?.[expandedMetric] ?? expandedFallbackMetrics?.[expandedMetric] ?? null
+    ? expandedMetrics?.[expandedMetric] ?? expandedFallbackMetricData ?? null
     : null
   const isHistoricalForecastActive =
     expandedMode === 'historical' && expandedForecastMode !== 'off'
+  const geminiInsightScopeLabel = isHistoricalForecastActive
+    ? `Analyzing current chart + XGBoost (${expandedForecastMode}) predictions...`
+    : 'Analyzing the currently visible dashboard trend...'
   const expandedForecastMetricData =
-    expandedMetric && isHistoricalForecastActive
+    expandedMetric && expandedMetric !== 'rainfall' && isHistoricalForecastActive
       ? expandedForecastMetrics?.[expandedMetric] ?? null
       : null
   const expandedMetricKey: MetricId =
@@ -1436,6 +1706,26 @@ function App() {
     const timeframe = expandedTimeframe as HistoricalTimeframe
     const historicalSampledPoints = resamplePoints(expandedPoints, 220)
     const predictionSampledPoints = resamplePoints(expandedPredictionPoints, 140)
+    const forecastContext: HistoricalInsightForecastContext =
+      expandedForecastMode === 'off'
+        ? {
+            enabled: false,
+            modelFamily: 'xgboost',
+            mode: 'off',
+            modelPath: null,
+            generatedAt: null,
+            warning: null,
+            predictionPointCount: 0,
+          }
+        : {
+            enabled: true,
+            modelFamily: 'xgboost',
+            mode: expandedForecastContext?.mode ?? expandedForecastMode,
+            modelPath: expandedForecastContext?.modelPath ?? null,
+            generatedAt: expandedForecastContext?.generatedAt ?? null,
+            warning: expandedForecastContext?.warning ?? expandedForecastError ?? null,
+            predictionPointCount: expandedPredictionPoints.length,
+          }
 
     return {
       metric: {
@@ -1458,6 +1748,11 @@ function App() {
         points: predictionSampledPoints,
         summary: summarizeTrendPoints(expandedPredictionPoints),
       },
+      assistantContext: {
+        role: 'weather-station-operator-assistant',
+        chartType: 'time-series',
+        forecast: forecastContext,
+      },
     }
   }, [
     expandedMode,
@@ -1468,6 +1763,8 @@ function App() {
     expandedMetricLabel,
     expandedMetricUnit,
     expandedForecastMode,
+    expandedForecastContext,
+    expandedForecastError,
   ])
 
   const requestHistoricalGeminiInsight = useCallback(async () => {
@@ -1647,7 +1944,31 @@ function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-icon" aria-hidden="true" />
+          <div className="brand-icon" aria-hidden="true">
+            <svg className="brand-icon-svg" viewBox="0 0 46 46" role="presentation">
+              <circle className="brand-icon-orbit" cx="23" cy="23" r="19.4" />
+              <circle className="brand-icon-core" cx="23" cy="23" r="15.6" />
+              <line className="brand-icon-horizon" x1="11.2" y1="28.7" x2="34.8" y2="28.7" />
+              <circle className="brand-icon-sun" cx="14.4" cy="13.8" r="3.7" />
+              <line className="brand-icon-sun-ray" x1="14.4" y1="8.1" x2="14.4" y2="6.7" />
+              <line className="brand-icon-sun-ray" x1="18.3" y1="13.8" x2="19.7" y2="13.8" />
+              <line className="brand-icon-sun-ray" x1="10.5" y1="13.8" x2="9.1" y2="13.8" />
+              <line className="brand-icon-sun-ray" x1="17.2" y1="10.9" x2="18.2" y2="9.9" />
+              <path
+                className="brand-icon-cloud"
+                d="M13.8 24.2c0-2 1.6-3.7 3.7-3.7 1.2 0 2.3.6 3 1.6.7-1 1.8-1.6 3.1-1.6 2.1 0 3.9 1.7 3.9 3.8 1.5.2 2.6 1.4 2.6 2.9 0 1.7-1.4 3.1-3.1 3.1H17c-1.8 0-3.2-1.4-3.2-3.2 0-1.3.8-2.4 2-2.9z"
+              />
+              <path className="brand-icon-rain" d="M18 30.7l-1.2 2.1M22 30.7l-1.2 2.1M26 30.7l-1.2 2.1" />
+              <line className="brand-icon-mast" x1="23" y1="13.2" x2="23" y2="33.5" />
+              <line className="brand-icon-arm" x1="23" y1="16.1" x2="31.8" y2="16.1" />
+              <path className="brand-icon-vane" d="M31.8 16.1l-3.9-2.2v4.4z" />
+              <circle className="brand-icon-pivot" cx="23" cy="16.1" r="1.3" />
+              <path
+                className="brand-icon-wave"
+                d="M9.4 35.1c1.7 0 1.7-1.3 3.4-1.3s1.7 1.3 3.4 1.3 1.7-1.3 3.4-1.3 1.7 1.3 3.4 1.3 1.7-1.3 3.4-1.3 1.7 1.3 3.4 1.3"
+              />
+            </svg>
+          </div>
           <div className="brand-text">
             <p className="eyebrow">Weather Station</p>
             <h1>Nanyang Polytechnic - Ang Mo Kio</h1>
@@ -1713,9 +2034,7 @@ function App() {
             {quickMetrics.map((metric) => (
               <button
                 type="button"
-                className={`mini-card mini-card-button${
-                  metric.metricId === 'pressure' ? ' mini-card-span' : ''
-                }`}
+                className="mini-card mini-card-button"
                 key={metric.label}
                 style={accentStyle(metric.accent)}
                 onClick={() => openExpandedMetric(metric.metricId, 'live')}
@@ -1743,54 +2062,38 @@ function App() {
           </div>
         </section>
 
-        <section className="card gauge-card">
+        <section className="card wind-card">
           <div className="card-header">
             <div>
-              <p className="eyebrow">Pressure Focus</p>
-              <h2>Pressure Level</h2>
+              <p className="eyebrow">Wind Focus</p>
+              <h2>Direction Compass</h2>
             </div>
-            <span className="chip chip-warn">
-              {metricNote('pressure', historicalMetrics?.pressure.latest ?? null)}
+            <span className={windChip.className}>
+              {windChip.label}
             </span>
           </div>
-          <div className="gauge-wrap">
-            <div className="gauge">
-              <svg
-                className="gauge-svg"
-                viewBox="0 0 260 160"
-                aria-hidden="true"
-              >
-                <path
-                  d="M30 130 A100 100 0 0 1 80 43.4"
-                  className="gauge-arc arc-good"
-                />
-                <path
-                  d="M80 43.4 A100 100 0 0 1 180 43.4"
-                  className="gauge-arc arc-mid"
-                />
-                <path
-                  d="M180 43.4 A100 100 0 0 1 230 130"
-                  className="gauge-arc arc-high"
-                />
-              </svg>
-              <div className="gauge-needle" style={gaugeNeedleStyle} />
-              <div className="gauge-center" />
+          <div className="wind-wrap">
+            <div className="wind-compass" style={windCompassStyle}>
+              <span className="wind-north-marker">N</span>
+              <span className="wind-east-marker">E</span>
+              <span className="wind-south-marker">S</span>
+              <span className="wind-west-marker">W</span>
+              <div className="wind-tick-ring" aria-hidden="true" />
+              <div className="wind-crosshair" aria-hidden="true" />
+              <div className="wind-arrow" aria-hidden="true" />
+              <div className="wind-ring">
+                <div className="wind-core">
+                  <span className="wind-cardinal">{windDirectionLabel}</span>
+                  <span className="wind-degree">{windDirectionDegreesLabel}</span>
+                  <span className="wind-speed">{windSpeedValue}</span>
+                  <span className="wind-speed-unit">{windSpeedUnit}</span>
+                </div>
+              </div>
             </div>
-            <div className="gauge-readout">
-              <span className="gauge-value">
-                {formatMetricValue('pressure', historicalMetrics?.pressure.latest ?? null)}
-              </span>
-              <span className="gauge-unit">hPa</span>
-              <span className="gauge-sub">
-                {historicalMetrics?.pressure.max !== null &&
-                historicalMetrics?.pressure.max !== undefined
-                  ? `Yesterday peak ${formatMetricValue('pressure', historicalMetrics.pressure.max)} hPa`
-                  : 'Yesterday data unavailable'}
-              </span>
-            </div>
-            <div className="gauge-scale">
-              <span>Low</span>
-              <span>High</span>
+            <div className="wind-readout">
+              <span className="wind-sub">{windDirectionText}</span>
+              <span className="wind-sub">{windStationLabel}</span>
+              <span className="wind-sub">{windUpdatedLabel}</span>
             </div>
           </div>
         </section>
@@ -1856,7 +2159,7 @@ function App() {
       <footer className="dashboard-footer">
         <div className="footer-left">
           <span className="footer-dot" />
-          Live metrics powered by sensor_data. Historical metrics powered by historical_data + sensor_data.
+          Live metrics powered by sensor_data + data.gov.sg (rainfall/wind). Historical metrics powered by historical_data + sensor_data.
         </div>
         <div className="footer-right">Weather Station UI</div>
       </footer>
@@ -1900,12 +2203,13 @@ function App() {
             {isOverviewFormulaOpen && (
               <div className="overview-formula">
                 <p>
-                  Formula: <strong>0.55 * Comfort + 0.25 * Pressure + 0.20 * Stability</strong>
+                  Formula:{' '}
+                  <strong>
+                    0.40 * Comfort + 0.15 * Pressure + 0.20 * Stability + 0.15 * Rain + 0.10 * Wind
+                  </strong>
                 </p>
                 <p>
-                  Comfort combines temperature and humidity around target
-                  conditions, pressure rewards steady conditions, and stability
-                  rewards smoother recent changes.
+                  Comfort blends temperature and humidity, pressure rewards barometric conditions, stability rewards smooth recent changes, rain comes from the latest 1-hour rainfall intensity, and wind comes from live wind speed.
                 </p>
               </div>
             )}
@@ -2026,7 +2330,7 @@ function App() {
                     onClick={openHistoricalGeminiPopup}
                     disabled={isHistoricalGeminiStreaming || expandedPoints.length === 0}
                   >
-                    {isHistoricalGeminiStreaming ? 'Gemini...' : 'Use Gemini'}
+                    {isHistoricalGeminiStreaming ? 'Gemini...' : 'Use Gemini (Chart + XGB)'}
                   </button>
                 )}
                 {expandedMode === 'historical' && isHistoricalForecastActive && (
@@ -2076,7 +2380,12 @@ function App() {
                 <div className="metric-gemini-header">
                   <div>
                     <p className="eyebrow">Gemini Insight</p>
-                    <h4>{expandedMetricLabel} Trend</h4>
+                    <h4>
+                      {expandedMetricLabel} Trend
+                      {isHistoricalForecastActive
+                        ? ` + ${expandedForecastMode.toUpperCase()} XGB`
+                        : ''}
+                    </h4>
                   </div>
                   <button
                     type="button"
@@ -2089,7 +2398,7 @@ function App() {
                 <div className="metric-gemini-body">
                   {!historicalGeminiText && !historicalGeminiError && (
                     <p className="metric-gemini-placeholder">
-                      Analyzing the currently visible dashboard trend...
+                      {geminiInsightScopeLabel}
                     </p>
                   )}
                   {historicalGeminiText && (

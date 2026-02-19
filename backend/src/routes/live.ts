@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { db } from '../services/db.js'
+import { getLiveDatagovSnapshot } from '../services/liveDatagov.js'
 
-type MetricKey = 'temperature' | 'humidity' | 'pressure'
+type MetricKey = 'temperature' | 'humidity' | 'pressure' | 'rainfall'
 
 type MetricSeries = {
   key: MetricKey
@@ -104,7 +105,9 @@ router.get('/metrics', async (req, res) => {
       typeof req.query.window === 'string' ? req.query.window : undefined,
     )
 
-    const windowStart = new Date(Date.now() - windowMs).toISOString()
+    const nowMs = Date.now()
+    const windowStartMs = nowMs - windowMs
+    const windowStart = new Date(windowStartMs).toISOString()
     const { rows } = await db.query<SensorRow>(
       `SELECT time, temp, humi, pres
        FROM ${tableName}
@@ -143,10 +146,22 @@ router.get('/metrics', async (req, res) => {
     const temperatureStats = computeSeriesStats(temperaturePoints)
     const humidityStats = computeSeriesStats(humidityPoints)
     const pressureStats = computeSeriesStats(pressurePoints)
+    const datagovSnapshot = await getLiveDatagovSnapshot()
+    const rainfallPoints = datagovSnapshot.rainfallPoints.filter((point) => {
+      const parsed = Date.parse(point.time)
+      return Number.isFinite(parsed) && parsed >= windowStartMs
+    })
+    const rainfallStats = computeSeriesStats(rainfallPoints)
 
     return res.json({
       source: {
         table: tableName,
+        datagov: {
+          stationId: datagovSnapshot.stationId,
+          requestedStationId: datagovSnapshot.requestedStationId,
+          sampledEveryMs: datagovSnapshot.pollEveryMs,
+          lastError: datagovSnapshot.lastError,
+        },
       },
       window: windowKey,
       generatedAt: new Date().toISOString(),
@@ -172,7 +187,15 @@ router.get('/metrics', async (req, res) => {
           points: pressurePoints,
           ...pressureStats,
         },
+        rainfall: {
+          key: 'rainfall',
+          label: 'Rainfall',
+          unit: datagovSnapshot.rainfallUnit,
+          points: rainfallPoints,
+          ...rainfallStats,
+        },
       },
+      wind: datagovSnapshot.wind,
     })
   } catch (error) {
     // eslint-disable-next-line no-console

@@ -5,6 +5,7 @@ import { scheduleDailyRollup } from './jobs/rollup.js'
 import { geminiRouter } from './routes/gemini.js'
 import { historyRouter } from './routes/history.js'
 import { liveRouter } from './routes/live.js'
+import { startLiveDatagovPolling } from './services/liveDatagov.js'
 
 const app = express()
 
@@ -26,3 +27,4 @@ app.listen(port, () => {
 })
 
 scheduleDailyRollup()
+startLiveDatagovPolling()
