@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { db } from '../services/db.js'
 import { getLiveDatagovSnapshot } from '../services/liveDatagov.js'
 
-type MetricKey = 'temperature' | 'humidity' | 'pressure' | 'rainfall'
+type MetricKey = 'temperature' | 'humidity' | 'pressure' | 'rainfall' | 'windspeed'
 
 type MetricSeries = {
   key: MetricKey
@@ -152,6 +152,11 @@ router.get('/metrics', async (req, res) => {
       return Number.isFinite(parsed) && parsed >= windowStartMs
     })
     const rainfallStats = computeSeriesStats(rainfallPoints)
+    const windspeedPoints = datagovSnapshot.windspeedPoints.filter((point) => {
+      const parsed = Date.parse(point.time)
+      return Number.isFinite(parsed) && parsed >= windowStartMs
+    })
+    const windspeedStats = computeSeriesStats(windspeedPoints)
 
     return res.json({
       source: {
@@ -193,6 +198,13 @@ router.get('/metrics', async (req, res) => {
           unit: datagovSnapshot.rainfallUnit,
           points: rainfallPoints,
           ...rainfallStats,
+        },
+        windspeed: {
+          key: 'windspeed',
+          label: 'Wind Speed',
+          unit: datagovSnapshot.wind.speedUnit,
+          points: windspeedPoints,
+          ...windspeedStats,
         },
       },
       wind: datagovSnapshot.wind,

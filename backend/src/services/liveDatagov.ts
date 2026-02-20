@@ -21,6 +21,7 @@ type ScriptPayload = {
   rainfall?: ScriptMetricPayload
   rainfallSeries?: unknown
   windspeed?: ScriptMetricPayload
+  windspeedSeries?: unknown
   winddirection?: ScriptMetricPayload
 }
 
@@ -50,6 +51,7 @@ export type LiveDatagovSnapshot = {
   rainfallLatest: number | null
   rainfallTimestamp: string | null
   rainfallPoints: DatagovMetricPoint[]
+  windspeedPoints: DatagovMetricPoint[]
   wind: LiveDatagovWind
   pollEveryMs: number
   lastError: string | null
@@ -125,7 +127,7 @@ const parseMetricPayload = (
   }
 }
 
-const parseRainfallSeries = (raw: unknown): DatagovMetricPoint[] => {
+const parseDatagovSeries = (raw: unknown): DatagovMetricPoint[] => {
   if (!Array.isArray(raw)) {
     return []
   }
@@ -222,6 +224,7 @@ const state: LiveDatagovSnapshot = {
   rainfallLatest: null,
   rainfallTimestamp: null,
   rainfallPoints: [],
+  windspeedPoints: [],
   wind: {
     speed: null,
     speedUnit: 'knots',
@@ -255,6 +258,27 @@ const upsertRainfallPoint = (point: DatagovMetricPoint) => {
   }
 
   state.rainfallPoints.push(point)
+}
+
+const pruneWindspeedHistory = () => {
+  const thresholdMs = Date.now() - historyRetentionMs
+
+  state.windspeedPoints = state.windspeedPoints
+    .filter((point) => {
+      const parsed = Date.parse(point.time)
+      return Number.isFinite(parsed) && parsed >= thresholdMs
+    })
+    .sort((left, right) => Date.parse(left.time) - Date.parse(right.time))
+}
+
+const upsertWindspeedPoint = (point: DatagovMetricPoint) => {
+  const existingIndex = state.windspeedPoints.findIndex((entry) => entry.time === point.time)
+  if (existingIndex >= 0) {
+    state.windspeedPoints[existingIndex] = point
+    return
+  }
+
+  state.windspeedPoints.push(point)
 }
 
 const runDatagovScript = async (): Promise<ScriptPayload> =>
@@ -337,7 +361,8 @@ const refreshFromDatagov = async (force = false): Promise<void> => {
       const rainfallMetric = parseMetricPayload(payload.rainfall, 'mm', stationId)
       const windspeedMetric = parseMetricPayload(payload.windspeed, 'knots', stationId)
       const winddirectionMetric = parseMetricPayload(payload.winddirection, 'degrees', stationId)
-      const rainfallSeries = parseRainfallSeries(payload.rainfallSeries)
+      const rainfallSeries = parseDatagovSeries(payload.rainfallSeries)
+      const windspeedSeries = parseDatagovSeries(payload.windspeedSeries)
 
       state.stationId = stationId
       state.requestedStationId = requestedStationId
@@ -359,6 +384,19 @@ const refreshFromDatagov = async (force = false): Promise<void> => {
       }
 
       pruneRainfallHistory()
+
+      for (const point of windspeedSeries) {
+        upsertWindspeedPoint(point)
+      }
+
+      if (windspeedSeries.length === 0 && windspeedMetric.value !== null) {
+        upsertWindspeedPoint({
+          time: windspeedMetric.timestamp ?? fetchedAt,
+          value: windspeedMetric.value,
+        })
+      }
+
+      pruneWindspeedHistory()
 
       const windDirection = winddirectionMetric.value
       state.wind = {
@@ -398,6 +436,7 @@ export const getLiveDatagovSnapshot = async (): Promise<LiveDatagovSnapshot> => 
   return {
     ...state,
     rainfallPoints: [...state.rainfallPoints],
+    windspeedPoints: [...state.windspeedPoints],
     wind: { ...state.wind },
   }
 }

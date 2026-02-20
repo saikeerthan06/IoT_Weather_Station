@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 type HistoricalMetricId = 'temperature' | 'humidity' | 'pressure'
-type MetricId = HistoricalMetricId | 'rainfall'
+type MetricId = HistoricalMetricId | 'rainfall' | 'windspeed'
 type LiveTimeframe = '1h' | '2h' | '6h' | '10h' | '12h'
 type HistoricalTimeframe = 'all' | '1d' | '3d'
 type ExpandedTimeframe = LiveTimeframe | HistoricalTimeframe
@@ -169,6 +169,11 @@ const metricStyleConfig: Record<
     fallbackUnit: 'mm',
     defaultLabel: 'Rainfall',
   },
+  windspeed: {
+    accent: 'sky',
+    fallbackUnit: 'knots',
+    defaultLabel: 'Wind Speed',
+  },
 }
 
 const liveTimeframeOptions: Array<{ value: LiveTimeframe; label: string }> = [
@@ -297,6 +302,14 @@ const metricNote = (metricId: MetricId, value: number | null) => {
     return 'Dry spell'
   }
 
+  if (metricId === 'windspeed') {
+    if (value >= 25) return 'Very strong'
+    if (value >= 18) return 'Strong breeze'
+    if (value >= 8) return 'Breezy'
+    if (value > 0) return 'Light wind'
+    return 'Calm'
+  }
+
   if (value >= 1025) return 'High pressure'
   if (value >= 1012) return 'Stable'
   if (value >= 1000) return 'Low'
@@ -337,6 +350,9 @@ const rangeLabel = (
 
   return `${min.toFixed(1)}-${max.toFixed(1)} ${unit}`
 }
+
+const isHistoricalMetricId = (metricId: MetricId): metricId is HistoricalMetricId =>
+  metricId === 'temperature' || metricId === 'humidity' || metricId === 'pressure'
 
 const normalizeMeterValue = (metric: MetricSeries | null) => {
   if (!metric || metric.latest === null || metric.min === null || metric.max === null) {
@@ -842,7 +858,12 @@ function App() {
   }, [expandedMetric, expandedMode, expandedTimeframe, expandedForecastMode])
 
   useEffect(() => {
-    if (expandedMode !== 'historical' || expandedForecastMode === 'off' || !expandedMetric) {
+    if (
+      expandedMode !== 'historical' ||
+      expandedForecastMode === 'off' ||
+      !expandedMetric ||
+      !isHistoricalMetricId(expandedMetric)
+    ) {
       setExpandedForecastMetrics(null)
       setExpandedForecastContext(null)
       setIsForecastLoading(false)
@@ -1231,6 +1252,57 @@ function App() {
     })
   }, [historicalMetrics])
 
+  const windspeedMetric = snapshotMetrics?.windspeed ?? null
+  const windTrendPoints = useMemo(() => {
+    const points = windspeedMetric?.points ?? []
+    if (points.length === 0) {
+      return []
+    }
+
+    const recent = filterByTimeframe(points, '6h')
+    return recent.length > 0 ? recent : points
+  }, [windspeedMetric])
+  const windTrendGeometry = useMemo(() => {
+    const sampled = resamplePoints(windTrendPoints, 48)
+    if (sampled.length < 2) {
+      return null
+    }
+
+    return buildChartGeometry(sampled, 236, 72, 6)
+  }, [windTrendPoints])
+  const windTrend = useMemo(() => {
+    const points = windspeedMetric?.points ?? []
+    const recent = filterByTimeframe(points, '2h')
+    const source = recent.length >= 2 ? recent : points.slice(-6)
+    if (source.length < 2) {
+      return {
+        label: 'Speed trend unavailable',
+        className: 'trend-flat',
+        delta: null as number | null,
+      }
+    }
+
+    const delta = source[source.length - 1].value - source[0].value
+    if (Math.abs(delta) < 0.4) {
+      return {
+        label: 'Speed trend steady',
+        className: 'trend-flat',
+        delta,
+      }
+    }
+
+    return delta > 0
+      ? {
+          label: 'Speed trend rising',
+          className: 'trend-up',
+          delta,
+        }
+      : {
+          label: 'Speed trend easing',
+          className: 'trend-down',
+          delta,
+        }
+  }, [windspeedMetric])
   const windDirectionNow = windSnapshot?.direction ?? null
   const windCompassStyle: CSSProperties = useMemo(() => {
     if (windDirectionNow === null || Number.isNaN(windDirectionNow)) {
@@ -1298,13 +1370,20 @@ function App() {
     }
   }, [windSnapshot])
 
+  const expandedHistoricalMetric =
+    expandedMode === 'historical' &&
+    expandedMetric !== null &&
+    isHistoricalMetricId(expandedMetric)
+      ? expandedMetric
+      : null
+
   const expandedFallbackMetricData =
     expandedMetric === null
       ? null
       : expandedMode === 'historical'
-        ? expandedMetric === 'rainfall'
+        ? expandedHistoricalMetric === null
           ? null
-          : historicalMetrics?.[expandedMetric] ?? null
+          : historicalMetrics?.[expandedHistoricalMetric] ?? null
         : snapshotMetrics?.[expandedMetric] ?? null
   const expandedMetricData = expandedMetric
     ? expandedMetrics?.[expandedMetric] ?? expandedFallbackMetricData ?? null
@@ -1315,8 +1394,8 @@ function App() {
     ? `Analyzing current chart + XGBoost (${expandedForecastMode}) predictions...`
     : 'Analyzing the currently visible dashboard trend...'
   const expandedForecastMetricData =
-    expandedMetric && expandedMetric !== 'rainfall' && isHistoricalForecastActive
-      ? expandedForecastMetrics?.[expandedMetric] ?? null
+    expandedHistoricalMetric && isHistoricalForecastActive
+      ? expandedForecastMetrics?.[expandedHistoricalMetric] ?? null
       : null
   const expandedMetricKey: MetricId =
     expandedForecastMetricData?.key ?? expandedMetricData?.key ?? expandedMetric ?? 'temperature'
@@ -2063,7 +2142,12 @@ function App() {
           </div>
         </section>
 
-        <section className="card wind-card">
+        <button
+          type="button"
+          className="card wind-card wind-card-button"
+          onClick={() => openExpandedMetric('windspeed', 'live')}
+          aria-label="Open live wind speed chart"
+        >
           <div className="card-header">
             <div>
               <p className="eyebrow">Wind Focus</p>
@@ -2093,11 +2177,38 @@ function App() {
             </div>
             <div className="wind-readout">
               <span className="wind-sub">{windDirectionText}</span>
+              <span className={`wind-sub wind-trend ${windTrend.className}`}>
+                {windTrend.label}
+                {windTrend.delta === null
+                  ? ''
+                  : ` (${formatMetricDelta('windspeed', windTrend.delta)} ${windSpeedUnit})`}
+              </span>
               <span className="wind-sub">{windStationLabel}</span>
               <span className="wind-sub">{windUpdatedLabel}</span>
             </div>
+            {windTrendGeometry ? (
+              <svg
+                className="wind-trend-sparkline"
+                viewBox={`0 0 ${windTrendGeometry.width} ${windTrendGeometry.height}`}
+                role="img"
+                aria-label="Wind speed trend"
+              >
+                <path className="wind-trend-area" d={windTrendGeometry.areaPath} />
+                <path className="wind-trend-line" d={windTrendGeometry.linePath} />
+                {windTrendGeometry.dot && (
+                  <circle
+                    className="wind-trend-dot"
+                    cx={windTrendGeometry.dot.x}
+                    cy={windTrendGeometry.dot.y}
+                    r="4.2"
+                  />
+                )}
+              </svg>
+            ) : (
+              <div className="wind-trend-empty">Waiting for wind trend history...</div>
+            )}
           </div>
-        </section>
+        </button>
 
         <div className="section-header">
           <p className="eyebrow">Historical Data</p>

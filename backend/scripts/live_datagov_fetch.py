@@ -242,6 +242,11 @@ def main() -> None:
             "unit": "knots",
             "stationId": windspeed_latest.get("stationId"),
         },
+        "windspeedSeries": [
+            {"time": point["time"], "value": point["value"]}
+            for point in windspeed_series
+            if isinstance(point, dict)
+        ],
         "winddirection": {
             "timestamp": winddirection_latest.get("timestamp"),
             "value": winddirection_latest.get("value"),
