@@ -157,6 +157,10 @@ router.get('/metrics', async (req, res) => {
       return Number.isFinite(parsed) && parsed >= windowStartMs
     })
     const windspeedStats = computeSeriesStats(windspeedPoints)
+    const winddirectionPoints = datagovSnapshot.winddirectionPoints.filter((point) => {
+      const parsed = Date.parse(point.time)
+      return Number.isFinite(parsed) && parsed >= windowStartMs
+    })
 
     return res.json({
       source: {
@@ -208,6 +212,10 @@ router.get('/metrics', async (req, res) => {
         },
       },
       wind: datagovSnapshot.wind,
+      windHistory: {
+        directionUnit: datagovSnapshot.wind.directionUnit,
+        directionPoints: winddirectionPoints,
+      },
     })
   } catch (error) {
     // eslint-disable-next-line no-console

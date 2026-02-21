@@ -253,6 +253,11 @@ def main() -> None:
             "unit": "degrees",
             "stationId": winddirection_latest.get("stationId"),
         },
+        "winddirectionSeries": [
+            {"time": point["time"], "value": point["value"]}
+            for point in winddirection_series
+            if isinstance(point, dict)
+        ],
     }
 
     json.dump(output, sys.stdout)

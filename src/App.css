@@ -1378,6 +1378,47 @@
   text-transform: none;
 }
 
+.metric-refresh-line {
+  margin: -6px 0 2px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wind-direction-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: -2px;
+}
+
+.wind-direction-chip {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(120, 150, 180, 0.26);
+  background: rgba(9, 14, 22, 0.76);
+  min-width: 200px;
+}
+
+.wind-direction-chip strong {
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.wind-direction-chip em {
+  font-style: normal;
+  font-size: 0.9rem;
+  color: var(--text);
+  letter-spacing: 0.03em;
+}
+
 .metric-gemini-popover {
   position: absolute;
   top: 96px;
@@ -2286,6 +2327,15 @@
   .metric-modal-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .wind-direction-summary {
+    flex-direction: column;
+  }
+
+  .wind-direction-chip {
+    width: 100%;
+    min-width: 0;
   }
 
   .expanded-chart-wrap {

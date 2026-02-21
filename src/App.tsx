@@ -49,9 +49,22 @@ type WindSnapshot = {
   available: boolean
 }
 
+type WindHistoryPayload = {
+  directionUnit: string
+  directionPoints: MetricPoint[]
+}
+
+type LiveSourcePayload = {
+  datagov?: {
+    sampledEveryMs?: number | null
+  }
+}
+
 type LiveMetricsApiResponse = {
   metrics: LiveMetricsRecord
   wind?: WindSnapshot
+  windHistory?: WindHistoryPayload
+  source?: LiveSourcePayload
 }
 
 type HistoricalMetricsApiResponse = {
@@ -60,6 +73,8 @@ type HistoricalMetricsApiResponse = {
 
 type ExpandedMetricsApiResponse = {
   metrics: MetricsRecord
+  windHistory?: WindHistoryPayload
+  source?: LiveSourcePayload
 }
 
 type ForecastApiResponse = {
@@ -189,6 +204,7 @@ const historicalTimeframeOptions: Array<{ value: HistoricalTimeframe; label: str
   { value: '1d', label: '1 Day' },
   { value: '3d', label: '3 Day' },
 ]
+const historicalTimeframes: HistoricalTimeframe[] = ['all', '1d', '3d']
 
 const timeframeMs: Record<LiveTimeframe, number> = {
   '1h': 1 * 60 * 60 * 1000,
@@ -205,7 +221,8 @@ const defaultGreeting: GeminiMessage = {
 
 const METRIC_MODAL_ANIMATION_MS = 220
 const Y_AXIS_TICK_COUNT = 6
-const LIVE_SNAPSHOT_POLL_MS = 60_000
+// UI refresh cadence for live snapshot tiles. Backend still enforces 5-minute data.gov polling.
+const LIVE_SNAPSHOT_POLL_MS = 10_000
 const LIVE_MODAL_POLL_MS = 10_000
 const HISTORICAL_POLL_MS = 15 * 60_000
 const SNAPSHOT_WINDOW: LiveTimeframe = '12h'
@@ -229,6 +246,36 @@ const formatLocalTime = (date: Date) =>
     minute: '2-digit',
     second: '2-digit',
   })
+
+const formatRefreshInterval = (rawMs: number) => {
+  const ms = Math.max(1000, Math.round(rawMs))
+  if (ms % (60 * 60 * 1000) === 0) {
+    const hours = ms / (60 * 60 * 1000)
+    return `${hours} ${hours === 1 ? 'hour' : 'hours'}`
+  }
+
+  if (ms % (60 * 1000) === 0) {
+    const minutes = ms / (60 * 1000)
+    return `${minutes} ${minutes === 1 ? 'min' : 'mins'}`
+  }
+
+  const seconds = Math.round(ms / 1000)
+  return `${seconds} ${seconds === 1 ? 'sec' : 'secs'}`
+}
+
+const nextRefreshAfter = (baselineMs: number, intervalMs: number, nowMs: number) => {
+  if (!Number.isFinite(baselineMs) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return null
+  }
+
+  if (baselineMs > nowMs) {
+    return baselineMs
+  }
+
+  const elapsed = nowMs - baselineMs
+  const steps = Math.floor(elapsed / intervalMs) + 1
+  return baselineMs + steps * intervalMs
+}
 
 const formatMetricValue = (metricId: MetricId, value: number | null) => {
   if (value === null || Number.isNaN(value)) {
@@ -353,6 +400,110 @@ const rangeLabel = (
 
 const isHistoricalMetricId = (metricId: MetricId): metricId is HistoricalMetricId =>
   metricId === 'temperature' || metricId === 'humidity' || metricId === 'pressure'
+
+const cardinalDirections = [
+  'N',
+  'NNE',
+  'NE',
+  'ENE',
+  'E',
+  'ESE',
+  'SE',
+  'SSE',
+  'S',
+  'SSW',
+  'SW',
+  'WSW',
+  'W',
+  'WNW',
+  'NW',
+  'NNW',
+] as const
+
+const normalizeDegrees = (rawDegrees: number) => {
+  const normalized = rawDegrees % 360
+  return normalized < 0 ? normalized + 360 : normalized
+}
+
+const toCardinalDirection = (directionDegrees: number | null): string | null => {
+  if (directionDegrees === null || Number.isNaN(directionDegrees)) {
+    return null
+  }
+
+  const normalized = normalizeDegrees(directionDegrees)
+  const index = Math.round(normalized / 22.5) % cardinalDirections.length
+  return cardinalDirections[index]
+}
+
+const prevailingDirectionFromPoints = (points: MetricPoint[]) => {
+  if (points.length === 0) {
+    return null
+  }
+
+  const bins = new Array<number>(cardinalDirections.length).fill(0)
+
+  for (const point of points) {
+    if (!Number.isFinite(point.value)) {
+      continue
+    }
+
+    const normalized = normalizeDegrees(point.value)
+    const index = Math.round(normalized / 22.5) % cardinalDirections.length
+    bins[index] += 1
+  }
+
+  let bestIndex = -1
+  let bestCount = 0
+  for (let index = 0; index < bins.length; index += 1) {
+    if (bins[index] > bestCount) {
+      bestIndex = index
+      bestCount = bins[index]
+    }
+  }
+
+  if (bestIndex < 0 || bestCount === 0) {
+    return null
+  }
+
+  return {
+    degrees: Math.round(bestIndex * 22.5) % 360,
+    cardinal: cardinalDirections[bestIndex],
+    count: bestCount,
+  }
+}
+
+const directionAtTime = (
+  points: MetricPoint[],
+  targetTimeIso: string,
+  toleranceMs = 12 * 60 * 1000,
+) => {
+  const targetMs = Date.parse(targetTimeIso)
+  if (!Number.isFinite(targetMs) || points.length === 0) {
+    return null
+  }
+
+  let closestDiff = Number.POSITIVE_INFINITY
+  let closestValue: number | null = null
+
+  for (const point of points) {
+    const pointMs = Date.parse(point.time)
+    if (!Number.isFinite(pointMs)) {
+      continue
+    }
+
+    const diff = Math.abs(pointMs - targetMs)
+    if (diff < closestDiff) {
+      closestDiff = diff
+      closestValue = point.value
+    }
+  }
+
+  if (closestValue === null || closestDiff > toleranceMs || !Number.isFinite(closestValue)) {
+    return null
+  }
+
+  return normalizeDegrees(closestValue)
+}
 
 const normalizeMeterValue = (metric: MetricSeries | null) => {
   if (!metric || metric.latest === null || metric.min === null || metric.max === null) {
@@ -675,10 +826,19 @@ function App() {
   const [localTime, setLocalTime] = useState(() => formatLocalTime(new Date()))
   const [snapshotMetrics, setSnapshotMetrics] = useState<LiveMetricsRecord | null>(null)
   const [windSnapshot, setWindSnapshot] = useState<WindSnapshot | null>(null)
+  const [liveWindDirectionPoints, setLiveWindDirectionPoints] = useState<MetricPoint[]>([])
+  const [liveDatagovSampleEveryMs, setLiveDatagovSampleEveryMs] = useState<number | null>(null)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [historicalMetrics, setHistoricalMetrics] = useState<HistoricalMetricsRecord | null>(null)
+  const [expandedHistoricalCache, setExpandedHistoricalCache] = useState<
+    Partial<Record<HistoricalTimeframe, HistoricalMetricsRecord>>
+  >({})
   const [historicalError, setHistoricalError] = useState<string | null>(null)
   const [expandedMetrics, setExpandedMetrics] = useState<MetricsRecord | null>(null)
+  const [expandedWindDirectionPoints, setExpandedWindDirectionPoints] = useState<MetricPoint[]>([])
+  const [expandedDatagovSampleEveryMs, setExpandedDatagovSampleEveryMs] =
+    useState<number | null>(null)
+  const [expandedLiveNextPollAtMs, setExpandedLiveNextPollAtMs] = useState<number | null>(null)
   const [expandedError, setExpandedError] = useState<string | null>(null)
   const [isOverviewModalOpen, setIsOverviewModalOpen] = useState(false)
   const [isOverviewFormulaOpen, setIsOverviewFormulaOpen] = useState(false)
@@ -736,6 +896,8 @@ function App() {
         const payload = (await response.json()) as LiveMetricsApiResponse
         setSnapshotMetrics(payload.metrics)
         setWindSnapshot(payload.wind ?? null)
+        setLiveWindDirectionPoints(payload.windHistory?.directionPoints ?? [])
+        setLiveDatagovSampleEveryMs(payload.source?.datagov?.sampledEveryMs ?? null)
         setSnapshotError(null)
       } catch (loadError) {
         if (controller.signal.aborted) {
@@ -744,6 +906,8 @@ function App() {
 
         const message =
           loadError instanceof Error ? loadError.message : 'Failed to load live metrics.'
+        setLiveWindDirectionPoints([])
+        setLiveDatagovSampleEveryMs(null)
         setSnapshotError(message)
       }
     }
@@ -756,6 +920,17 @@ function App() {
       window.clearInterval(intervalId)
     }
   }, [])
+
+  useEffect(() => {
+    if (!historicalMetrics) {
+      return
+    }
+
+    setExpandedHistoricalCache((current) => ({
+      ...current,
+      '3d': historicalMetrics,
+    }))
+  }, [historicalMetrics])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -798,37 +973,126 @@ function App() {
   useEffect(() => {
     if (!expandedMetric || !expandedMode) {
       setExpandedMetrics(null)
+      setExpandedWindDirectionPoints([])
+      setExpandedDatagovSampleEveryMs(null)
+      setExpandedLiveNextPollAtMs(null)
       setExpandedError(null)
       return
     }
 
     if (expandedMode === 'historical' && expandedForecastMode !== 'off') {
+      setExpandedWindDirectionPoints([])
+      setExpandedDatagovSampleEveryMs(null)
+      setExpandedLiveNextPollAtMs(null)
       setExpandedError(null)
       return
     }
 
     const controller = new AbortController()
 
+    if (expandedMode === 'historical') {
+      setExpandedWindDirectionPoints([])
+      setExpandedDatagovSampleEveryMs(null)
+      setExpandedLiveNextPollAtMs(null)
+
+      const selectedWindow = expandedTimeframe as HistoricalTimeframe
+      const cachedSelected = expandedHistoricalCache[selectedWindow]
+
+      if (cachedSelected) {
+        setExpandedMetrics(cachedSelected)
+        setExpandedError(null)
+      }
+
+      const fetchHistoricalWindow = async (windowKey: HistoricalTimeframe) => {
+        const response = await fetch(`/api/history/metrics?window=${windowKey}`, {
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          throw new Error('Failed to load historical metrics.')
+        }
+
+        const payload = (await response.json()) as HistoricalMetricsApiResponse
+        return payload.metrics
+      }
+
+      const missingWindows = historicalTimeframes.filter(
+        (windowKey) => !expandedHistoricalCache[windowKey],
+      )
+
+      const hydrateHistoricalCache = async () => {
+        const loadWindow = async (windowKey: HistoricalTimeframe, applyToView: boolean) => {
+          try {
+            const metrics = await fetchHistoricalWindow(windowKey)
+            if (controller.signal.aborted) {
+              return
+            }
+
+            setExpandedHistoricalCache((current) => ({
+              ...current,
+              [windowKey]: metrics,
+            }))
+
+            if (applyToView) {
+              setExpandedMetrics(metrics)
+              setExpandedError(null)
+            }
+          } catch (loadError) {
+            if (controller.signal.aborted) {
+              return
+            }
+
+            if (!applyToView || cachedSelected) {
+              return
+            }
+
+            const message =
+              loadError instanceof Error
+                ? loadError.message
+                : 'Failed to load historical metrics.'
+            setExpandedError(message)
+          }
+        }
+
+        if (!cachedSelected) {
+          await loadWindow(selectedWindow, true)
+        }
+
+        const prefetchWindows = missingWindows.filter(
+          (windowKey) => windowKey !== selectedWindow,
+        )
+        if (prefetchWindows.length === 0) {
+          return
+        }
+
+        await Promise.all(
+          prefetchWindows.map((windowKey) => loadWindow(windowKey, false)),
+        )
+      }
+
+      void hydrateHistoricalCache()
+
+      return () => {
+        controller.abort()
+      }
+    }
+
     const loadExpanded = async () => {
       try {
-        const endpoint =
-          expandedMode === 'live'
-            ? `/api/live/metrics?window=${expandedTimeframe}`
-            : `/api/history/metrics?window=${expandedTimeframe}`
+        const endpoint = `/api/live/metrics?window=${expandedTimeframe}`
         const response = await fetch(endpoint, {
           signal: controller.signal,
         })
 
         if (!response.ok) {
-          throw new Error(
-            expandedMode === 'live'
-              ? 'Failed to load live metric stream.'
-              : 'Failed to load historical metrics.',
-          )
+          throw new Error('Failed to load live metric stream.')
         }
 
         const payload = (await response.json()) as ExpandedMetricsApiResponse
         setExpandedMetrics(payload.metrics)
+        setExpandedWindDirectionPoints(payload.windHistory?.directionPoints ?? [])
+        setExpandedDatagovSampleEveryMs(payload.source?.datagov?.sampledEveryMs ?? null)
+        setExpandedLiveNextPollAtMs(Date.now() + LIVE_MODAL_POLL_MS)
         setExpandedError(null)
       } catch (loadError) {
         if (controller.signal.aborted) {
@@ -838,9 +1102,10 @@ function App() {
         const message =
           loadError instanceof Error
             ? loadError.message
-            : expandedMode === 'live'
-              ? 'Failed to load live metric stream.'
-              : 'Failed to load historical metrics.'
+            : 'Failed to load live metric stream.'
+        setExpandedWindDirectionPoints([])
+        setExpandedDatagovSampleEveryMs(null)
+        setExpandedLiveNextPollAtMs(null)
         setExpandedError(message)
       }
     }
@@ -855,7 +1120,12 @@ function App() {
         window.clearInterval(intervalId)
       }
     }
-  }, [expandedMetric, expandedMode, expandedTimeframe, expandedForecastMode])
+  }, [
+    expandedForecastMode,
+    expandedMetric,
+    expandedMode,
+    expandedTimeframe,
+  ])
 
   useEffect(() => {
     if (
@@ -966,6 +1236,9 @@ function App() {
       setShowExpandedAxes(false)
       setIsMetricClosing(false)
       setExpandedMetrics(null)
+      setExpandedWindDirectionPoints([])
+      setExpandedDatagovSampleEveryMs(null)
+      setExpandedLiveNextPollAtMs(null)
       setExpandedError(null)
     },
     [],
@@ -1253,23 +1526,6 @@ function App() {
   }, [historicalMetrics])
 
   const windspeedMetric = snapshotMetrics?.windspeed ?? null
-  const windTrendPoints = useMemo(() => {
-    const points = windspeedMetric?.points ?? []
-    if (points.length === 0) {
-      return []
-    }
-
-    const recent = filterByTimeframe(points, '6h')
-    return recent.length > 0 ? recent : points
-  }, [windspeedMetric])
-  const windTrendGeometry = useMemo(() => {
-    const sampled = resamplePoints(windTrendPoints, 48)
-    if (sampled.length < 2) {
-      return null
-    }
-
-    return buildChartGeometry(sampled, 236, 72, 6)
-  }, [windTrendPoints])
   const windTrend = useMemo(() => {
     const points = windspeedMetric?.points ?? []
     const recent = filterByTimeframe(points, '2h')
@@ -1319,7 +1575,7 @@ function App() {
       ? '--'
       : windSnapshot.speed.toFixed(1)
   const windSpeedUnit = windSnapshot?.speedUnit ?? 'knots'
-  const windDirectionLabel = windSnapshot?.cardinal ?? '--'
+  const windDirectionLabel = windSnapshot?.cardinal ?? toCardinalDirection(windDirectionNow) ?? '--'
   const windDirectionDegrees =
     windDirectionNow === null || Number.isNaN(windDirectionNow)
       ? null
@@ -1410,6 +1666,124 @@ function App() {
   const activeTimeframeOptions =
     expandedMode === 'live' ? liveTimeframeOptions : historicalTimeframeOptions
   const isTimeframeLockedByForecast = isHistoricalForecastActive
+  const isLiveWindspeedExpanded =
+    expandedMode === 'live' && expandedMetricKey === 'windspeed'
+  const modalWindDirectionPoints = useMemo(() => {
+    if (!isLiveWindspeedExpanded) {
+      return []
+    }
+
+    return expandedWindDirectionPoints.length > 0
+      ? expandedWindDirectionPoints
+      : liveWindDirectionPoints
+  }, [expandedWindDirectionPoints, isLiveWindspeedExpanded, liveWindDirectionPoints])
+  const prevailingWindDirection = useMemo(
+    () => prevailingDirectionFromPoints(modalWindDirectionPoints),
+    [modalWindDirectionPoints],
+  )
+  const currentWindDirectionSummary =
+    windDirectionDegrees === null ? 'Unavailable' : `${windDirectionDegrees} deg (${windDirectionLabel})`
+  const prevailingWindDirectionSummary = prevailingWindDirection
+    ? `${prevailingWindDirection.degrees} deg (${prevailingWindDirection.cardinal})`
+    : 'Unavailable'
+  const liveGraphRefreshEveryMs = useMemo(() => {
+    if (expandedMode !== 'live') {
+      return null
+    }
+
+    if (expandedMetricKey === 'rainfall' || expandedMetricKey === 'windspeed') {
+      return expandedDatagovSampleEveryMs ?? liveDatagovSampleEveryMs ?? 5 * 60 * 1000
+    }
+
+    return LIVE_MODAL_POLL_MS
+  }, [expandedDatagovSampleEveryMs, expandedMetricKey, expandedMode, liveDatagovSampleEveryMs])
+  const isDatagovLiveMetric = expandedMetricKey === 'rainfall' || expandedMetricKey === 'windspeed'
+  const liveGraphRefreshLabel =
+    expandedMode === 'live' && liveGraphRefreshEveryMs !== null
+      ? `Refreshes every: ${formatRefreshInterval(liveGraphRefreshEveryMs)}`
+      : null
+  const liveGraphPollCountdownLabel = useMemo(() => {
+    if (
+      expandedMode !== 'live' ||
+      liveGraphRefreshEveryMs === null ||
+      isDatagovLiveMetric ||
+      expandedLiveNextPollAtMs === null
+    ) {
+      return null
+    }
+
+    const seconds = Math.max(
+      0,
+      Math.ceil((expandedLiveNextPollAtMs - Date.now()) / 1000),
+    )
+    return `${seconds}s`
+  }, [
+    expandedLiveNextPollAtMs,
+    expandedMode,
+    isDatagovLiveMetric,
+    liveGraphRefreshEveryMs,
+    localTime,
+  ])
+  const liveGraphNextRefreshLabel = useMemo(() => {
+    if (
+      expandedMode !== 'live' ||
+      liveGraphRefreshEveryMs === null ||
+      !isDatagovLiveMetric
+    ) {
+      return null
+    }
+
+    const latestTime =
+      expandedMetricData?.points?.[expandedMetricData.points.length - 1]?.time ??
+      (expandedMetricKey === 'rainfall'
+        ? snapshotMetrics?.rainfall.points.at(-1)?.time ?? null
+        : windSnapshot?.timestamp ?? snapshotMetrics?.windspeed.points.at(-1)?.time ?? null)
+
+    if (!latestTime) {
+      return 'Next refresh: waiting for sample'
+    }
+
+    const latestMs = Date.parse(latestTime)
+    if (!Number.isFinite(latestMs)) {
+      return 'Next refresh: waiting for sample'
+    }
+
+    const nextMs = nextRefreshAfter(latestMs, liveGraphRefreshEveryMs, Date.now())
+    if (nextMs === null) {
+      return 'Next refresh: waiting for sample'
+    }
+
+    return `Next refresh: ${formatLocalTime(new Date(nextMs))}`
+  }, [
+    expandedMetricData,
+    expandedMetricKey,
+    expandedMode,
+    isDatagovLiveMetric,
+    liveDatagovSampleEveryMs,
+    liveGraphRefreshEveryMs,
+    localTime,
+    snapshotMetrics,
+    windSnapshot?.timestamp,
+  ])
+  const liveGraphRefreshLine = useMemo(() => {
+    if (expandedMode !== 'live' || !liveGraphRefreshLabel) {
+      return null
+    }
+
+    if (isDatagovLiveMetric) {
+      return `${liveGraphNextRefreshLabel ?? 'Next refresh: waiting for sample'} | ${liveGraphRefreshLabel}`
+    }
+
+    return liveGraphPollCountdownLabel
+      ? `${liveGraphRefreshLabel} (${liveGraphPollCountdownLabel})`
+      : liveGraphRefreshLabel
+  }, [
+    expandedMode,
+    isDatagovLiveMetric,
+    liveGraphNextRefreshLabel,
+    liveGraphPollCountdownLabel,
+    liveGraphRefreshLabel,
+  ])
 
   useEffect(() => {
     if (isHistoricalForecastActive) {
@@ -1718,6 +2092,25 @@ function App() {
     expandedPredictionDisplayPoints.length > 0 &&
     expandedHoverIndex !== null &&
     (isPredictionFocusChartActive || expandedHoverIndex >= predictionDisplayStartIndex)
+  const expandedHoverDirectionDegrees = useMemo(() => {
+    if (!isLiveWindspeedExpanded || !expandedHoverPoint) {
+      return null
+    }
+
+    return directionAtTime(modalWindDirectionPoints, expandedHoverPoint.time)
+  }, [expandedHoverPoint, isLiveWindspeedExpanded, modalWindDirectionPoints])
+  const expandedHoverDirectionLabel = useMemo(() => {
+    if (expandedHoverDirectionDegrees === null) {
+      return null
+    }
+
+    const cardinal = toCardinalDirection(expandedHoverDirectionDegrees)
+    if (!cardinal) {
+      return null
+    }
+
+    return `${Math.round(expandedHoverDirectionDegrees)} deg (${cardinal})`
+  }, [expandedHoverDirectionDegrees])
 
   const highlightedPredictionChartPoints = useMemo(() => {
     if (
@@ -2186,27 +2579,6 @@ function App() {
               <span className="wind-sub">{windStationLabel}</span>
               <span className="wind-sub">{windUpdatedLabel}</span>
             </div>
-            {windTrendGeometry ? (
-              <svg
-                className="wind-trend-sparkline"
-                viewBox={`0 0 ${windTrendGeometry.width} ${windTrendGeometry.height}`}
-                role="img"
-                aria-label="Wind speed trend"
-              >
-                <path className="wind-trend-area" d={windTrendGeometry.areaPath} />
-                <path className="wind-trend-line" d={windTrendGeometry.linePath} />
-                {windTrendGeometry.dot && (
-                  <circle
-                    className="wind-trend-dot"
-                    cx={windTrendGeometry.dot.x}
-                    cy={windTrendGeometry.dot.y}
-                    r="4.2"
-                  />
-                )}
-              </svg>
-            ) : (
-              <div className="wind-trend-empty">Waiting for wind trend history...</div>
-            )}
           </div>
         </button>
 
@@ -2561,6 +2933,25 @@ function App() {
               )}
             </div>
 
+            {expandedMode === 'live' && liveGraphRefreshLine && (
+              <p className="metric-refresh-line">
+                {liveGraphRefreshLine}
+              </p>
+            )}
+
+            {isLiveWindspeedExpanded && (
+              <div className="wind-direction-summary" aria-label="Wind direction summary">
+                <span className="wind-direction-chip">
+                  <strong>Current Direction</strong>
+                  <em>{currentWindDirectionSummary}</em>
+                </span>
+                <span className="wind-direction-chip">
+                  <strong>Prevailing ({String(expandedTimeframe).toUpperCase()})</strong>
+                  <em>{prevailingWindDirectionSummary}</em>
+                </span>
+              </div>
+            )}
+
             {isHistoricalForecastActive && expandedPredictionDisplayPoints.length > 0 && (
               <div className="forecast-legend">
                 <span className="forecast-legend-item">
@@ -2766,6 +3157,13 @@ function App() {
                       <span>{formatTimestamp(expandedHoverPoint.time)}</span>
                       {isHistoricalForecastActive && (
                         <span>{expandedHoverIsPrediction ? 'Prediction' : 'Historical'}</span>
+                      )}
+                      {isLiveWindspeedExpanded && (
+                        <span>
+                          {expandedHoverDirectionLabel
+                            ? `Direction ${expandedHoverDirectionLabel}`
+                            : 'Direction unavailable'}
+                        </span>
                       )}
                       <strong>
                         {formatMetricValue(expandedMetricKey, expandedHoverPoint.value)}{' '}
