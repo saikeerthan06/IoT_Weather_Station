@@ -324,6 +324,44 @@ const trendClassFromDelta = (delta: number | null) => {
   return delta > 0 ? 'trend-up' : 'trend-down'
 }
 
+type LiveMetricJustificationRule = {
+  condition: string
+  label: string
+}
+
+const liveMetricJustificationRules: Record<MetricId, LiveMetricJustificationRule[]> = {
+  temperature: [
+    { condition: '>= 34 C', label: 'Very warm' },
+    { condition: '>= 28 C', label: 'Warm' },
+    { condition: '>= 22 C', label: 'Mild' },
+    { condition: '< 22 C', label: 'Cool' },
+  ],
+  humidity: [
+    { condition: '>= 70 %', label: 'Humid' },
+    { condition: '>= 45 %', label: 'Comfort' },
+    { condition: '< 45 %', label: 'Dry' },
+  ],
+  pressure: [
+    { condition: '>= 1025 hPa', label: 'High pressure' },
+    { condition: '>= 1012 hPa', label: 'Stable' },
+    { condition: '>= 1000 hPa', label: 'Low' },
+    { condition: '< 1000 hPa', label: 'Very low' },
+  ],
+  rainfall: [
+    { condition: '>= 15 mm', label: 'Heavy rain' },
+    { condition: '>= 5 mm', label: 'Steady rain' },
+    { condition: '> 0 mm', label: 'Light rain' },
+    { condition: '<= 0 mm', label: 'Dry spell' },
+  ],
+  windspeed: [
+    { condition: '>= 25 knots', label: 'Very strong' },
+    { condition: '>= 18 knots', label: 'Strong breeze' },
+    { condition: '>= 8 knots', label: 'Breezy' },
+    { condition: '> 0 knots', label: 'Light wind' },
+    { condition: '<= 0 knots', label: 'Calm' },
+  ],
+}
+
 const metricNote = (metricId: MetricId, value: number | null) => {
   if (value === null || Number.isNaN(value)) {
     return 'No data'
@@ -842,6 +880,7 @@ function App() {
   const [expandedError, setExpandedError] = useState<string | null>(null)
   const [isOverviewModalOpen, setIsOverviewModalOpen] = useState(false)
   const [isOverviewFormulaOpen, setIsOverviewFormulaOpen] = useState(false)
+  const [isLiveJustificationOpen, setIsLiveJustificationOpen] = useState(false)
 
   const [expandedMetric, setExpandedMetric] = useState<MetricId | null>(null)
   const [expandedMode, setExpandedMode] = useState<'live' | 'historical' | null>(null)
@@ -1240,6 +1279,7 @@ function App() {
       setExpandedDatagovSampleEveryMs(null)
       setExpandedLiveNextPollAtMs(null)
       setExpandedError(null)
+      setIsLiveJustificationOpen(false)
     },
     [],
   )
@@ -1297,6 +1337,10 @@ function App() {
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [expandedMetric, closeExpandedMetric])
+
+  useEffect(() => {
+    setIsLiveJustificationOpen(false)
+  }, [expandedMetric, expandedMode])
 
   useEffect(() => {
     setExpandedHoverIndex(null)
@@ -1698,6 +1742,16 @@ function App() {
     return LIVE_MODAL_POLL_MS
   }, [expandedDatagovSampleEveryMs, expandedMetricKey, expandedMode, liveDatagovSampleEveryMs])
   const isDatagovLiveMetric = expandedMetricKey === 'rainfall' || expandedMetricKey === 'windspeed'
+  const liveJustificationRules =
+    expandedMode === 'live' ? liveMetricJustificationRules[expandedMetricKey] : null
+  const liveMetricCurrentLabel =
+    expandedMode === 'live'
+      ? metricNote(expandedMetricKey, expandedMetricData?.latest ?? null)
+      : null
+  const liveMetricCurrentValue =
+    expandedMode === 'live'
+      ? formatMetricValue(expandedMetricKey, expandedMetricData?.latest ?? null)
+      : '--'
   const liveGraphRefreshLabel =
     expandedMode === 'live' && liveGraphRefreshEveryMs !== null
       ? `Refreshes every: ${formatRefreshInterval(liveGraphRefreshEveryMs)}`
@@ -2781,6 +2835,18 @@ function App() {
                     </button>
                   ))}
                 </div>
+                {expandedMode === 'live' && (
+                  <button
+                    type="button"
+                    className="metric-help-button"
+                    aria-expanded={isLiveJustificationOpen}
+                    aria-controls="live-metric-justification"
+                    aria-label={`Show ${expandedMetricLabel.toLowerCase()} label guide`}
+                    onClick={() => setIsLiveJustificationOpen((current) => !current)}
+                  >
+                    ?
+                  </button>
+                )}
                 {expandedMode === 'historical' && (
                   <label className="forecast-select">
                     <span>Show predictions/forecast</span>
@@ -2937,6 +3003,31 @@ function App() {
               <p className="metric-refresh-line">
                 {liveGraphRefreshLine}
               </p>
+            )}
+            {expandedMode === 'live' && isLiveJustificationOpen && liveJustificationRules && (
+              <section
+                id="live-metric-justification"
+                className="live-justification-panel"
+                aria-label={`${expandedMetricLabel} label thresholds`}
+              >
+                <div className="live-justification-header">
+                  <strong>How This Label Is Determined</strong>
+                  <p>
+                    Current:{' '}
+                    <span>
+                      {liveMetricCurrentLabel} ({liveMetricCurrentValue} {expandedMetricUnit})
+                    </span>
+                  </p>
+                </div>
+                <div className="live-justification-list" role="list">
+                  {liveJustificationRules.map((rule) => (
+                    <div className="live-justification-item" role="listitem" key={rule.condition}>
+                      <code>{rule.condition}</code>
+                      <span>{rule.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
             )}
 
             {isLiveWindspeedExpanded && (
