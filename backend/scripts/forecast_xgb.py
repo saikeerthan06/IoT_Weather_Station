@@ -38,6 +38,10 @@ DEFAULT_FEATURE_COLUMNS = [
     "pres_roll6_mean",
 ]
 
+STATION_TIMEZONE = "Asia/Singapore"
+HOURLY_OVERNIGHT_EXTENSION_START_HOUR = 18
+HOURLY_OVERNIGHT_EXTENSION_END_HOUR = 7
+
 
 def _fail(message: str) -> None:
     print(message, file=sys.stderr)
@@ -150,12 +154,26 @@ def _feature_row(series_df: pd.DataFrame, ts: pd.Timestamp, feature_columns: Lis
     return frame.reindex(columns=feature_columns)
 
 
+def _hourly_forecast_end(now_ts: pd.Timestamp) -> pd.Timestamp:
+    local_now = now_ts.tz_convert(STATION_TIMEZONE)
+    local_day_start = local_now.normalize()
+
+    if local_now.hour >= HOURLY_OVERNIGHT_EXTENSION_START_HOUR:
+        local_end = local_day_start + pd.Timedelta(
+            days=1, hours=HOURLY_OVERNIGHT_EXTENSION_END_HOUR
+        )
+    else:
+        local_end = local_day_start + pd.Timedelta(hours=23)
+
+    return local_end.tz_convert(now_ts.tz)
+
+
 def _future_index(mode: str, now_ts: pd.Timestamp, series_df: pd.DataFrame) -> pd.DatetimeIndex:
     last_ts = series_df.index.max()
     anchor = max(last_ts, now_ts.floor("h"))
 
     if mode == "hourly":
-        end = now_ts.normalize() + pd.Timedelta(hours=23)
+        end = _hourly_forecast_end(now_ts)
     else:
         end = now_ts.floor("h") + pd.Timedelta(days=7)
 
