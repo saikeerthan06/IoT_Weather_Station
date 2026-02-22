@@ -2719,6 +2719,7 @@ function App() {
                     type="button"
                     className="overview-help-button"
                     aria-expanded={isOverviewFormulaOpen}
+                    aria-controls="overview-formula-panel"
                     aria-label="Show weather overview formula"
                     onClick={() =>
                       setIsOverviewFormulaOpen((current) => !current)
@@ -2738,8 +2739,11 @@ function App() {
               </button>
             </div>
 
-            {isOverviewFormulaOpen && (
-              <div className="overview-formula">
+            <div
+              className={`overview-formula-collapse${isOverviewFormulaOpen ? ' open' : ''}`}
+              aria-hidden={!isOverviewFormulaOpen}
+            >
+              <div id="overview-formula-panel" className="overview-formula">
                 <p>
                   Formula:{' '}
                   <strong>
@@ -2750,7 +2754,7 @@ function App() {
                   Comfort blends temperature and humidity, pressure rewards barometric conditions, stability rewards smooth recent changes, rain comes from the latest 1-hour rainfall intensity, and wind comes from live wind speed.
                 </p>
               </div>
-            )}
+            </div>
 
             <div className="overview-modal-content">
               <div className="overview-left">
@@ -3004,30 +3008,37 @@ function App() {
                 {liveGraphRefreshLine}
               </p>
             )}
-            {expandedMode === 'live' && isLiveJustificationOpen && liveJustificationRules && (
-              <section
-                id="live-metric-justification"
-                className="live-justification-panel"
-                aria-label={`${expandedMetricLabel} label thresholds`}
+            {expandedMode === 'live' && liveJustificationRules && (
+              <div
+                className={`live-justification-collapse${
+                  isLiveJustificationOpen ? ' open' : ''
+                }`}
+                aria-hidden={!isLiveJustificationOpen}
               >
-                <div className="live-justification-header">
-                  <strong>How This Label Is Determined</strong>
-                  <p>
-                    Current:{' '}
-                    <span>
-                      {liveMetricCurrentLabel} ({liveMetricCurrentValue} {expandedMetricUnit})
-                    </span>
-                  </p>
-                </div>
-                <div className="live-justification-list" role="list">
-                  {liveJustificationRules.map((rule) => (
-                    <div className="live-justification-item" role="listitem" key={rule.condition}>
-                      <code>{rule.condition}</code>
-                      <span>{rule.label}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
+                <section
+                  id="live-metric-justification"
+                  className="live-justification-panel"
+                  aria-label={`${expandedMetricLabel} label thresholds`}
+                >
+                  <div className="live-justification-header">
+                    <strong>How This Label Is Determined</strong>
+                    <p>
+                      Current:{' '}
+                      <span>
+                        {liveMetricCurrentLabel} ({liveMetricCurrentValue} {expandedMetricUnit})
+                      </span>
+                    </p>
+                  </div>
+                  <div className="live-justification-list" role="list">
+                    {liveJustificationRules.map((rule) => (
+                      <div className="live-justification-item" role="listitem" key={rule.condition}>
+                        <code>{rule.condition}</code>
+                        <span>{rule.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
             )}
 
             {isLiveWindspeedExpanded && (
