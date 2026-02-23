@@ -34,6 +34,8 @@ const WINDOW_PRESETS: Record<string, number> = {
 }
 
 const DEFAULT_WINDOW = '12h'
+const DEFAULT_SENSOR_ONLINE_THRESHOLD_MS = 15 * 60 * 1000
+const SENSOR_STATUS_LOOKBACK_ROWS = 24
 
 const sanitizeTableName = (raw: string) => {
   const trimmed = raw.trim()
@@ -50,6 +52,16 @@ const parseNumber = (value: string | number | null | undefined): number | null =
 
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+const parsePositiveInteger = (raw: string | undefined, fallback: number) => {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+
+  const rounded = Math.floor(parsed)
+  return rounded > 0 ? rounded : fallback
 }
 
 const toIsoTime = (value: string | Date | null | undefined): string | null => {
@@ -98,6 +110,48 @@ const parseWindowMs = (raw: string | undefined) => {
   return { key: DEFAULT_WINDOW, ms: WINDOW_PRESETS[DEFAULT_WINDOW] }
 }
 
+const computeObservedCadenceMs = (times: string[]) => {
+  if (times.length < 2) {
+    return null
+  }
+
+  const intervals: number[] = []
+  for (let index = 1; index < times.length; index += 1) {
+    const newerMs = Date.parse(times[index - 1] ?? '')
+    const olderMs = Date.parse(times[index] ?? '')
+    if (!Number.isFinite(newerMs) || !Number.isFinite(olderMs)) {
+      continue
+    }
+
+    const delta = newerMs - olderMs
+    if (delta > 0) {
+      intervals.push(delta)
+    }
+  }
+
+  if (intervals.length === 0) {
+    return null
+  }
+
+  intervals.sort((left, right) => left - right)
+  const mid = Math.floor(intervals.length / 2)
+  if (intervals.length % 2 === 1) {
+    return intervals[mid] ?? null
+  }
+
+  const leftMid = intervals[mid - 1]
+  const rightMid = intervals[mid]
+  if (leftMid === undefined || rightMid === undefined) {
+    return null
+  }
+  return Math.round((leftMid + rightMid) / 2)
+}
+
+const sensorOnlineThresholdMs = parsePositiveInteger(
+  process.env.SENSOR_ONLINE_THRESHOLD_MS,
+  DEFAULT_SENSOR_ONLINE_THRESHOLD_MS,
+)
+
 router.get('/metrics', async (req, res) => {
   try {
     const tableName = sanitizeTableName(process.env.SENSOR_TABLE ?? 'sensor_data')
@@ -116,6 +170,34 @@ router.get('/metrics', async (req, res) => {
        ORDER BY time::timestamptz ASC`,
       [windowStart],
     )
+    const recentSensorResult = await db.query<SensorRow>(
+      `SELECT time, temp, humi, pres
+       FROM ${tableName}
+       WHERE time IS NOT NULL
+         AND (temp IS NOT NULL OR humi IS NOT NULL OR pres IS NOT NULL)
+       ORDER BY time::timestamptz DESC
+       LIMIT $1`,
+      [SENSOR_STATUS_LOOKBACK_ROWS],
+    )
+    const recentSensorTimes = recentSensorResult.rows
+      .map((row) => toIsoTime(row.time))
+      .filter((time): time is string => time !== null)
+    const latestSensorTime = recentSensorTimes[0] ?? null
+    let sensorStalenessMs: number | null = null
+    if (latestSensorTime) {
+      const parsed = Date.parse(latestSensorTime)
+      if (Number.isFinite(parsed)) {
+        sensorStalenessMs = Math.max(0, nowMs - parsed)
+      }
+    }
+    const observedCadenceMs = computeObservedCadenceMs(recentSensorTimes)
+    const adaptiveThresholdMs =
+      observedCadenceMs === null
+        ? sensorOnlineThresholdMs
+        : Math.max(sensorOnlineThresholdMs, observedCadenceMs * 3)
+    const sensorConnected =
+      sensorStalenessMs !== null &&
+      sensorStalenessMs <= adaptiveThresholdMs
 
     const temperaturePoints: Array<{ time: string; value: number }> = []
     const humidityPoints: Array<{ time: string; value: number }> = []
@@ -165,6 +247,14 @@ router.get('/metrics', async (req, res) => {
     return res.json({
       source: {
         table: tableName,
+        sensor: {
+          connected: sensorConnected,
+          lastSeen: latestSensorTime,
+          stalenessMs: sensorStalenessMs,
+          thresholdMs: adaptiveThresholdMs,
+          observedCadenceMs,
+          sampleCount: recentSensorTimes.length,
+        },
         datagov: {
           stationId: datagovSnapshot.stationId,
           requestedStationId: datagovSnapshot.requestedStationId,

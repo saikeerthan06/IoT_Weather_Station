@@ -54,9 +54,18 @@ type WindHistoryPayload = {
   directionPoints: MetricPoint[]
 }
 
+type LiveSensorSourcePayload = {
+  connected?: boolean | null
+  lastSeen?: string | null
+  stalenessMs?: number | null
+  thresholdMs?: number | null
+}
+
 type LiveSourcePayload = {
+  sensor?: LiveSensorSourcePayload
   datagov?: {
     sampledEveryMs?: number | null
+    lastError?: string | null
   }
 }
 
@@ -65,6 +74,13 @@ type LiveMetricsApiResponse = {
   wind?: WindSnapshot
   windHistory?: WindHistoryPayload
   source?: LiveSourcePayload
+}
+
+type SensorConnectivityState = {
+  connected: boolean | null
+  lastSeen: string | null
+  stalenessMs: number | null
+  thresholdMs: number | null
 }
 
 type HistoricalMetricsApiResponse = {
@@ -866,6 +882,7 @@ function App() {
   const [windSnapshot, setWindSnapshot] = useState<WindSnapshot | null>(null)
   const [liveWindDirectionPoints, setLiveWindDirectionPoints] = useState<MetricPoint[]>([])
   const [liveDatagovSampleEveryMs, setLiveDatagovSampleEveryMs] = useState<number | null>(null)
+  const [sensorConnectivity, setSensorConnectivity] = useState<SensorConnectivityState | null>(null)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [historicalMetrics, setHistoricalMetrics] = useState<HistoricalMetricsRecord | null>(null)
   const [expandedHistoricalCache, setExpandedHistoricalCache] = useState<
@@ -937,6 +954,27 @@ function App() {
         setWindSnapshot(payload.wind ?? null)
         setLiveWindDirectionPoints(payload.windHistory?.directionPoints ?? [])
         setLiveDatagovSampleEveryMs(payload.source?.datagov?.sampledEveryMs ?? null)
+        const sensorSource = payload.source?.sensor
+        setSensorConnectivity(
+          sensorSource
+            ? {
+              connected:
+                typeof sensorSource.connected === 'boolean' ? sensorSource.connected : null,
+              lastSeen:
+                typeof sensorSource.lastSeen === 'string' ? sensorSource.lastSeen : null,
+              stalenessMs:
+                typeof sensorSource.stalenessMs === 'number' &&
+                  Number.isFinite(sensorSource.stalenessMs)
+                  ? sensorSource.stalenessMs
+                  : null,
+              thresholdMs:
+                typeof sensorSource.thresholdMs === 'number' &&
+                  Number.isFinite(sensorSource.thresholdMs)
+                  ? sensorSource.thresholdMs
+                  : null,
+            }
+            : null,
+        )
         setSnapshotError(null)
       } catch (loadError) {
         if (controller.signal.aborted) {
@@ -947,6 +985,12 @@ function App() {
           loadError instanceof Error ? loadError.message : 'Failed to load live metrics.'
         setLiveWindDirectionPoints([])
         setLiveDatagovSampleEveryMs(null)
+        setSensorConnectivity((current) => ({
+          connected: false,
+          lastSeen: current?.lastSeen ?? null,
+          stalenessMs: current?.stalenessMs ?? null,
+          thresholdMs: current?.thresholdMs ?? null,
+        }))
         setSnapshotError(message)
       }
     }
@@ -1375,6 +1419,62 @@ function App() {
 
     return formatTimestamp(latest.time)
   }, [snapshotMetrics])
+  const topbarSensorStatus = useMemo(() => {
+    if (snapshotError) {
+      return {
+        label: 'Offline',
+        tone: 'offline' as const,
+        title: 'Live metric API unavailable.',
+      }
+    }
+
+    if (snapshotMetrics) {
+      if (sensorConnectivity?.connected === false) {
+        return {
+          label: 'Online',
+          tone: 'online' as const,
+          title: sensorConnectivity.lastSeen
+            ? `Live API reachable. Last sensor sample: ${formatTimestamp(sensorConnectivity.lastSeen)}`
+            : 'Live API reachable. Awaiting fresh sensor heartbeat.',
+        }
+      }
+
+      return {
+        label: 'Online',
+        tone: 'online' as const,
+        title: sensorConnectivity?.lastSeen
+          ? `Last sensor sample: ${formatTimestamp(sensorConnectivity.lastSeen)}`
+          : 'Sensors are connected.',
+      }
+    }
+
+    const connected = sensorConnectivity?.connected
+    if (connected === true) {
+      return {
+        label: 'Online',
+        tone: 'online' as const,
+        title: sensorConnectivity.lastSeen
+          ? `Last sensor sample: ${formatTimestamp(sensorConnectivity.lastSeen)}`
+          : 'Sensors are connected.',
+      }
+    }
+
+    if (connected === false) {
+      return {
+        label: 'Offline',
+        tone: 'offline' as const,
+        title: sensorConnectivity?.lastSeen
+          ? `Last sensor sample: ${formatTimestamp(sensorConnectivity.lastSeen)}`
+          : 'No recent sensor data.',
+      }
+    }
+
+    return {
+      label: 'Checking',
+      tone: 'checking' as const,
+      title: 'Waiting for sensor heartbeat.',
+    }
+  }, [sensorConnectivity, snapshotError, snapshotMetrics])
 
   const weatherOverview = useMemo(() => {
     const temp = snapshotMetrics?.temperature.latest ?? null
@@ -2509,9 +2609,12 @@ function App() {
             <span className="meta-label">Local Time</span>
             <span className="meta-value">{localTime}</span>
           </div>
-          <div className="status-pill">
-            <span className="status-dot" />
-            Online
+          <div
+            className={`status-pill status-${topbarSensorStatus.tone}`}
+            title={topbarSensorStatus.title}
+          >
+            <span className={`status-dot status-${topbarSensorStatus.tone}`} />
+            {topbarSensorStatus.label}
           </div>
         </div>
       </header>
